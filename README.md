@@ -31,8 +31,8 @@ python main.py all      search "наруто"           # по всем исто
 | `details`   | карточка тайтла (slug подставляется автоматически)     |
 | `chapters`  | список глав                                            |
 | `dump`      | полный обход каталога в JSON + CSV + JSONL             |
+| `enrich`    | дозагрузить полные карточки: описание, жанры, авторы   |
 | `build`     | собрать JSON/CSV из чекпоинта, без единого запроса     |
-| `enrich`    | дозагрузить карточки (buzumanga: описание, закладки)     |
 | `index`     | построить офлайн-индекс из выгрузок                   |
 | `offline`   | поиск по офлайн-индексу (мгновенно, без сети)         |
 | `merge`     | склеить выгрузки разных источников в один файл        |
@@ -43,11 +43,49 @@ python main.py all      search "наруто"           # по всем исто
 python main.py remanga dump --csv --delay 0.3             # весь каталог (~30k)
 python main.py remanga dump --max-pages 5                # первые 5 страниц
 python main.py remanga details naruto                    # dir подставится сам
-python main.py inkstory enrich --limit 200               # обогатить 200 карточек
+python main.py remanga enrich --limit 200 --csv          # дозагрузить карточки
+python main.py inkstory enrich --limit 0 --csv           # весь каталог, без ограничения
 python main.py index --catalog data/remanga_catalog.json --reset
 python main.py offline "берсерк"
 python main.py merge data/remanga_catalog.json data/inkstory_catalog.json
 ```
+
+## Полные данные тайтла: `dump` и `enrich`
+
+Каталог и карточка отдают разный объём. `dump` быстрый, но это срез: название,
+обложка, рейтинг, статус. Полная карточка добавляет описание, жанры, авторов,
+издателей — но стоит одного запроса на тайтл.
+
+Поэтому полнота получается двумя шагами:
+
+```bash
+python main.py remanga dump                        # 1: быстрый обход каталога
+python main.py remanga enrich --limit 0 --csv      # 2: дозагрузка карточек
+```
+
+`enrich` одинаков для всех источников: достаточно, чтобы источник умел
+`details()` — отдельного кода под каждый сайт нет.
+
+Обогащённая запись помечается полем `details_at`, поэтому повторный запуск
+**продолжает** с места остановки, а не начинает по новой; прерывание не теряет
+собранное, а `--refresh` обогащает заново уже помеченные записи.
+
+Что реально удаётся вытащить с каждого сайта:
+
+| Источник     | Описание | Жанры                    | Рейтинг              | Авторы / издатели                      | Ещё                                                    |
+|--------------|----------|--------------------------|----------------------|----------------------------------------|--------------------------------------------------------|
+| **ReManga**  | да       | да + рубрики `categories` | да                  | да (`authors` / `publishers`)          | возрастное ограничение, заметка, обои, наличие аниме     |
+| **InkStory** | да       | да                       | да + число голосов   | автор, художник, издатели, переводчики, журнал | страна, статус, год, главы, просмотры, лайки, другие названия |
+| **BuZuManga** | да      | да (`tags`)              | да + число голосов   | —                                      | закладки, дата оригинала, типы, возрастной рейтинг     |
+| **MangaLIB** | —        | —                        | только из каталога   | —                                      | сайт не отдаёт это в API                                |
+| **Com-X**    | —        | —                        | —                    | —                                      | только sitemap: id, url, название, `lastmod`            |
+
+Про MangaLIB стоит понимать: это не недосмотр парсера. Публичный API
+(`/api/manga/{slug}`) возвращает **подмножество** полей каталога — описаний,
+жанров и авторов в нём нет вовсе, сайт собирает их на клиенте. Проверено по
+`api2`/`api.cdnlibs.org` и по бандлу фронтенда, где других адресов нет. Поэтому
+источник помечен `enrichable = False`, чтобы `enrich` не делал тысячи запросов
+впустую.
 
 ### Устойчивость к обрывам
 
@@ -55,6 +93,10 @@ python main.py merge data/remanga_catalog.json data/inkstory_catalog.json
 (Ctrl+C, краш, 429) не теряет собранное — повторный запуск продолжит с
 чекпоинта. `--fresh` начинает с нуля. При 429 пауза автоматически
 удваивается до 60 с.
+
+`enrich` работает так же: прогресс дописывается в тот же чекпоинт, а
+обогащённые записи помечаются полем `details_at`, поэтому повторный запуск
+берёт только то, что ещё не загружено.
 
 ### BuZuManga: особенности сайта
 
@@ -128,10 +170,10 @@ src/mangaparser/
 │   └── storage/              exporters.py, checkpoint.py, sqlite_index.py
 └── core/                     контракты и утилиты, внешних зависимостей нет
     ├── ports.py              протоколы Source / Checkpoint / OfflineIndex
-    ├── models.py             Item, Chapter, extract_pages
+    ├── models.py             Item, Chapter, merge_details, extract_pages
     ├── http.py               сессия с ретраями, Http, Throttle
-    └── text.py               strip_tags, to_float, to_int, label, dedupe
-tests/                        106 тестов без обращения к сети
+    └── text.py               strip_tags, to_float, to_int, to_compact_int, label, dedupe
+tests/                        131 тест без обращения к сети
 data/                         выгрузки (git-ignored)
 ```
 
@@ -157,10 +199,11 @@ class MyClient:
     item_class = MyBook        # dataclass, наследующий Item
     dedupe_key = "id"          # поле дедупликации в выгрузке
     key_hint = "slug"          # что нужно для details()/chapters()
+    enrichable = True          # False, если details() не даёт больше каталога
 
     def catalog(self, page: int = 1, **kw) -> list[MyBook]: ...
     def search(self, query: str, page: int = 1, **kw) -> list[MyBook]: ...
-    def details(self, key: str, **kw) -> MyBook: ...
+    def details(self, key: str, **kw) -> MyBook: ...   # карточка: описание, жанры, авторы
     def chapters(self, key: str, **kw) -> list[dict]: ...
     def iter_catalog(self, *, delay, max_pages=None, checkpoint=None, on_page=None, **kw): ...
 ```

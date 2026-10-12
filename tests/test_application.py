@@ -11,6 +11,7 @@ from mangaparser.application import index as index_uc
 from mangaparser.application import merge as merge_uc
 from mangaparser.application.browse import format_details, format_row, search
 from mangaparser.application.report import CollectingReporter
+from mangaparser.core.http import SourceError
 from mangaparser.core.ports import Source
 from mangaparser.infrastructure.storage import JsonlCheckpoint, SqliteIndex, finalize
 from mangaparser.sources.inkstory.client import Book
@@ -96,6 +97,12 @@ class TestFinalize:
         out = tmp_path / "c.json"
         written = finalize([{"id": 1, "a": "x"}, {"id": 2, "b": "y"}], out, key="id")
         assert written["csv"].read_text(encoding="utf-8-sig").splitlines()[0] == "id,a,b"
+
+    def test_rows_without_key_are_not_collapsed(self, tmp_path: Path) -> None:
+        """Каталог без поля-ключа (только slug) не должен схлопнуться в одну запись."""
+        out = tmp_path / "c.json"
+        rows = [{"slug": "a"}, {"slug": "b"}, {"slug": "c"}]
+        assert finalize(rows, out, key="id", want_csv=False)["rows"] == 3
 
 
 class TestDumpCatalog:
@@ -188,17 +195,39 @@ class TestIndex:
 
 
 class TestEnrich:
-    class EnrichSource(FakeSource):
-        item_class = Book
-        dedupe_key = "slug"
+    """Обогащение универсально: источнику достаточно уметь details()."""
 
-        def enrich(self, books: list[Book], *, delay: float | None = None) -> list[Book]:
-            for book in books:
-                book.author = "Автор"
-            return books
+    class EnrichSource(FakeSource):
+        key_hint = "slug"
+
+        def details(self, key: str, **_: object) -> Book:
+            return Book(
+                slug=key,
+                url=f"https://inkstory.net/content/{key}",
+                title=f"Т {key}",
+                author="Автор",
+                publishers=["Азбука"],
+                genres=["Фэнтези"],
+            )
+
+    class FlakySource(FakeSource):
+        key_hint = "slug"
+
+        def details(self, key: str, **_: object) -> Book:
+            if key == "slug-1":
+                raise SourceError("404")
+            return Book(slug=key, url=f"https://inkstory.net/content/{key}", title=key)
+
+    class DirSource(FakeSource):
+        """Адресуется полем dir, а не slug — как ReManga."""
+
+        key_hint = "dir"
+
+        def details(self, key: str, **_: object) -> Book:
+            return Book(slug="ignored", url="https://x", title=key, author=f"автор {key}")
 
     class NoEnrichSource(FakeSource):
-        pass
+        enrichable = False
 
     @staticmethod
     def _checkpoint(path: Path, count: int = 2) -> Path:
@@ -216,7 +245,10 @@ class TestEnrich:
             self.EnrichSource([]), out, limit=10, reporter=CollectingReporter(), want_csv=False
         )
         assert written is not None and written["rows"] == 2
-        assert all(row["author"] == "Автор" for row in JsonlCheckpoint(out).load())
+        rows = JsonlCheckpoint(out).load()
+        assert all(row["author"] == "Автор" for row in rows)
+        assert all(row["genres"] == "Фэнтези" for row in rows)
+        assert all(row[enrich_uc.DETAILS_MARK] for row in rows)
 
     def test_enrich_respects_limit(self, tmp_path: Path) -> None:
         out = self._checkpoint(tmp_path / "inkstory_catalog.json", count=5)
@@ -225,6 +257,63 @@ class TestEnrich:
         )
         assert written is not None
         assert sum(1 for row in JsonlCheckpoint(out).load() if row.get("author")) == 2
+
+    def test_limit_zero_enriches_everything(self, tmp_path: Path) -> None:
+        out = self._checkpoint(tmp_path / "inkstory_catalog.json", count=4)
+        enrich_uc.enrich_catalog(
+            self.EnrichSource([]), out, limit=0, reporter=CollectingReporter(), want_csv=False
+        )
+        assert sum(1 for row in JsonlCheckpoint(out).load() if row.get("author")) == 4
+
+    def test_second_run_skips_enriched_rows(self, tmp_path: Path) -> None:
+        """Обогащённое помечается, поэтому повторный запуск не ходит на сайт заново."""
+        out = self._checkpoint(tmp_path / "inkstory_catalog.json")
+        source = self.EnrichSource([])
+        enrich_uc.enrich_catalog(source, out, limit=10, reporter=CollectingReporter(), want_csv=False)
+
+        class Counting(self.EnrichSource):
+            calls = 0
+
+            def details(self, key: str, **_: object) -> Book:
+                type(self).calls += 1
+                return Book(slug=key, url="https://x", title=key)
+
+        enrich_uc.enrich_catalog(
+            Counting([]), out, limit=10, reporter=CollectingReporter(), want_csv=False
+        )
+        assert Counting.calls == 0
+
+    def test_refresh_reloads_marked_rows(self, tmp_path: Path) -> None:
+        out = self._checkpoint(tmp_path / "inkstory_catalog.json")
+        source = self.EnrichSource([])
+        enrich_uc.enrich_catalog(source, out, limit=10, reporter=CollectingReporter(), want_csv=False)
+        source2 = self.EnrichSource([])
+        enrich_uc.enrich_catalog(
+            source2, out, limit=10, refresh=True, reporter=CollectingReporter(), want_csv=False
+        )
+        assert all(row["author"] == "Автор" for row in JsonlCheckpoint(out).load())
+
+    def test_addressing_uses_source_key_hint(self, tmp_path: Path) -> None:
+        """Запись адресуется полем, которое источник назвал в key_hint."""
+        out = tmp_path / "remanga_catalog.json"
+        JsonlCheckpoint(out.with_suffix(".jsonl")).append(
+            [{"id": 7, "dir": "<29.04.2026>naruto_", "name": "Наруто", "url": "https://remanga.org/x"}]
+        )
+        enrich_uc.enrich_catalog(
+            self.DirSource([]), out, limit=1, reporter=CollectingReporter(), want_csv=False
+        )
+        row = JsonlCheckpoint(out.with_suffix(".jsonl")).load()[0]
+        assert row["author"] == "автор <29.04.2026>naruto_"
+
+    def test_failed_card_does_not_stop_the_run(self, tmp_path: Path) -> None:
+        out = self._checkpoint(tmp_path / "inkstory_catalog.json", count=3)
+        written = enrich_uc.enrich_catalog(
+            self.FlakySource([]), out, limit=10, reporter=CollectingReporter(), want_csv=False
+        )
+        assert written is not None and written["rows"] == 3
+        rows = {row["slug"]: row for row in JsonlCheckpoint(out).load()}
+        assert enrich_uc.DETAILS_MARK not in rows["slug-1"]
+        assert all(enrich_uc.DETAILS_MARK in rows[f"slug-{i}"] for i in (0, 2))
 
     def test_source_without_enrich(self, tmp_path: Path) -> None:
         assert enrich_uc.enrich_catalog(

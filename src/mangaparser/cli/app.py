@@ -105,10 +105,18 @@ def cmd_build(args: argparse.Namespace, report: Reporter) -> int:
 
 
 def cmd_enrich(args: argparse.Namespace, report: Reporter) -> int:
-    """Дозагружает карточки (только для источников с методом enrich)."""
+    """Дозагружает полные карточки тайтлов (все источники, у которых есть details())."""
     for client in _clients(args.source):
         out = Path(args.out) if args.out else default_out(client.name, ROOT)
-        enrich_uc.enrich_catalog(client, out, limit=args.limit, delay=args.delay, reporter=report)
+        enrich_uc.enrich_catalog(
+            client,
+            out,
+            limit=args.limit,
+            delay=args.delay,
+            want_csv=args.csv,
+            refresh=args.refresh,
+            reporter=report,
+        )
     return 0
 
 
@@ -187,10 +195,12 @@ COMMANDS: list[tuple[str, str, Handler, Callable[[argparse.ArgumentParser], None
         p.add_argument("--out", default=None),
         p.add_argument("--csv", action="store_true"),
     )),
-    ("enrich", "дозагрузить карточки (inkstory, buzumanga)", cmd_enrich, lambda p: (
+    ("enrich", "дозагрузить полные карточки (описание, жанры, авторы)", cmd_enrich, lambda p: (
         p.add_argument("--out", default=None),
-        p.add_argument("--limit", type=int, default=100),
-        p.add_argument("--delay", type=float, default=0.7),
+        p.add_argument("--limit", type=int, default=100, help="сколько карточек (0 — без ограничения)"),
+        p.add_argument("--delay", type=float, default=None, help="пауза между запросами, сек"),
+        p.add_argument("--csv", action="store_true", help="пересобрать CSV"),
+        p.add_argument("--refresh", action="store_true", help="обогатить заново уже обогащённые"),
     )),
 ]
 

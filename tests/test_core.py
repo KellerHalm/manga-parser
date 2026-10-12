@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from mangaparser.core.http import Throttle
-from mangaparser.core.models import Chapter, Item
-from mangaparser.core.text import dedupe, label, strip_tags, to_float, to_int
+from mangaparser.core.models import Chapter, Item, is_blank, merge_details
+from mangaparser.core.text import dedupe, label, strip_tags, to_compact_int, to_float, to_int
 from mangaparser.sources.mangalib.client import Manga
 from mangaparser.sources.remanga.client import Title
 
@@ -37,6 +37,24 @@ class TestText:
     )
     def test_to_int(self, raw, expected) -> None:
         assert to_int(raw) == expected
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("73M", 73_000_000),
+            ("826k", 826_000),
+            ("2.91k", 2910),
+            ("1.2b", 1_200_000_000),
+            ("1 234 567", 1_234_567),
+            ("73M просмотров", 73_000_000),
+            ("", None),
+            (None, None),
+            (826, 826),
+        ],
+    )
+    def test_to_compact_int_expands_rounded_counters(self, raw, expected) -> None:
+        """Сайты округляют счётчики: «73M» — это 73 миллиона, а не 73."""
+        assert to_compact_int(raw) == expected
 
     def test_label_handles_api_objects(self) -> None:
         assert label({"id": 1, "label": "Манга"}) == "Манга"
@@ -82,6 +100,32 @@ class TestModels:
 
         with pytest.raises(TypeError):
             Broken().flat()
+
+    def test_flat_roundtrip_keeps_empty_lists(self) -> None:
+        """Пустой список в выгрузке — это None, и он должен вернуться списком."""
+        title = Title(id=1, name="X", url="u", dir="d", genres=["Ужасы"])
+        restored = Title.from_flat(title.flat())
+        assert restored.genres == ["Ужасы"]
+        assert restored.categories == [] and restored.publishers == []
+
+    def test_merge_details_fills_and_keeps_existing(self) -> None:
+        row = {"slug": "x", "title": "X", "rating": 7.5, "description": None}
+        merge_details(row, {"description": "Описание", "rating": None, "authors": ["Ода"]})
+        assert row["description"] == "Описание"
+        assert row["authors"] == ["Ода"]
+        # пустое значение карточки не затирает уже собранное
+        assert row["rating"] == 7.5
+
+    def test_merge_details_never_touches_identity(self) -> None:
+        """Происхождение записи задаётся выгрузкой, карточка его не меняет."""
+        row = {"slug": "x", "source": "inkstory"}
+        merge_details(row, {"source": "чужой", "title": "Обновлённое"})
+        assert row["source"] == "inkstory"
+        assert row["title"] == "Обновлённое"
+
+    def test_is_blank_treats_zero_as_value(self) -> None:
+        assert is_blank(None) and is_blank("") and is_blank([]) and is_blank({})
+        assert not is_blank(0) and not is_blank(False) and not is_blank("x")
 
     def test_chapter_flat(self) -> None:
         chapter = Chapter(number=1.0, title="Начало", url="https://x/1", extra={"pages": 20})

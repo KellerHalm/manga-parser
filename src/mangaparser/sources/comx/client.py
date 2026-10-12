@@ -100,6 +100,8 @@ class ComXClient:
     item_class = Title
     dedupe_key = "id"
     key_hint = "id"
+    #: Обогащать нечего: карточка и каталог отдают одни и те же поля sitemap.
+    enrichable = False
 
     def __init__(self, session: Any | None = None, *, delay: float = DEFAULT_DELAY) -> None:
         self.http = Http(session or build_session(headers=HEADERS), error=ComXError)

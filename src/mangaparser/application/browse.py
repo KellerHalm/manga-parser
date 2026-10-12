@@ -23,6 +23,10 @@ def resolve_key(source: Source, key: str, *, reporter: Reporter | None = None) -
     может начинаться с id (`109483--berserk`), вручную их не набрать.
     Поэтому простой slug ищется в каталоге, и уже найденный ключ используется
     как есть. При нескольких совпадениях побеждает самое точное.
+
+    Сравнивается и ключ, и название: slug у источников транслитерирован
+    (`berserk_of_gluttony_`), поэтому по одному только ключу русское имя
+    тайтла не находилось.
     """
     try:
         source.details(key)
@@ -31,27 +35,39 @@ def resolve_key(source: Source, key: str, *, reporter: Reporter | None = None) -
         pass
 
     needle = key.casefold()
-    candidates: list[tuple[int, str]] = []
+    candidates: list[tuple[int, int, str]] = []
     for item in source.search(key):
         candidate = getattr(item, "key", "") or ""
         if not candidate:
             continue
-        folded = candidate.casefold()
-        if folded == needle:
-            rank = 0
-        elif folded.rsplit("-", 1)[-1] == needle or folded.endswith(f"--{needle}"):
-            rank = 1
-        elif needle in folded:
-            rank = 2
-        else:
-            continue
-        candidates.append((rank, candidate))
+        title = str(getattr(item, "title", "") or "")
+        rank = _match_rank(needle, candidate.casefold(), title.casefold())
+        if rank is not None:
+            candidates.append((rank, len(title), candidate))
 
     if not candidates:
         return key
-    best = min(candidates, key=lambda pair: pair[0])[1]
+    best = min(candidates)[2]
     if reporter:
         reporter.info(f"[i] ключ уточнён: {key} -> {best}")
+    return best
+
+
+def _match_rank(needle: str, *texts: str) -> int | None:
+    """Насколько точно запрос совпал с ключом или названием (меньше — лучше)."""
+    best: int | None = None
+    for text in texts:
+        if not text:
+            continue
+        if text == needle:
+            rank = 0
+        elif text.rsplit("-", 1)[-1] == needle or text.endswith(f"--{needle}"):
+            rank = 1
+        elif needle in text:
+            rank = 2
+        else:
+            continue
+        best = rank if best is None else min(best, rank)
     return best
 
 
@@ -136,7 +152,7 @@ def format_details(item: Any) -> str:
     flat = item if isinstance(item, dict) else item.flat()
     title = flat.get("title") or flat.get("name") or flat.get("main_name") or "—"
     lines = [str(title)]
-    skip = {"title", "name", "main_name", "alt_titles", "description"}
+    skip = {"title", "name", "main_name", "description"}
     for key, value in flat.items():
         if key in skip or value in (None, "", [], {}):
             continue

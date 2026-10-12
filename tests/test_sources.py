@@ -16,7 +16,7 @@ from mangaparser.sources.comx.client import ComXClient, ComXError
 from mangaparser.sources.inkstory import parsing
 from mangaparser.sources.inkstory.client import InkStoryClient
 from mangaparser.sources.mangalib.client import MangaLibClient
-from mangaparser.sources.remanga.client import ReMangaClient
+from mangaparser.sources.remanga.client import ReMangaClient, Title
 from tests.conftest import FakeResponse, FakeSession
 
 MANGALIB_PAGE = {
@@ -60,6 +60,31 @@ REMANGA_PAGE = {
     "next": "next-page",
 }
 
+#: Полная карточка `/api/v2/titles/{dir}/` — то, что даёт enrich.
+#: Поля, которых нет в REMANGA_PAGE, и есть смысл обогащения.
+REMANGA_CARD = {
+    "data": {
+        **REMANGA_PAGE["results"][0],
+        "another_name": "Naruto Shippuuden",
+        "description": "<p>Наруто <b>Uzumaki</b> — ниндзя.</p>",
+        "summary": None,
+        "translate_status": {"id": 2, "name": "Продолжается"},
+        "age_limit": {"id": 12, "name": "16+"},
+        "note": "<p>Перевод fan-группы.</p>",
+        "has_anime": True,
+        "fresh_rating": "9.01",
+        "genres": [{"id": 1, "name": "Сёнен"}, {"id": 5, "name": "Боевик"}],
+        "categories": [{"id": 33, "name": "Самураи"}],
+        "creators": [
+            {"id": 74, "name": "Азбука", "type": 3},
+            {"id": 23, "name": "Bilibili Comics", "type": 3},
+            {"id": 1100, "name": "Eiichiro Oda", "type": 4},
+            {"id": 76, "name": "Boichi", "type": 4},
+        ],
+        "wallpaper": {"high": "/wallpaper/naruto.jpg"},
+    }
+}
+
 INKSTORY_HTML = """
 <html><head>
 <script type="application/ld+json">
@@ -79,7 +104,11 @@ INKSTORY_BOOK_HTML = """
 <script type="application/ld+json">
 {"@type":"ComicSeries","name":"Стальной алхимик",
  "url":"https://inkstory.net/content/steel-alchemist",
- "image":"https://inkstory.net/cover.jpg"}
+ "image":"https://inkstory.net/cover.jpg",
+ "description":"<p>Братья Эльрик</p>",
+ "genre":["Фэнтези","Приключения"],
+ "aggregateRating":{"@type":"AggregateRating","ratingValue":9.1,"ratingCount":4200,
+                    "bestRating":10,"worstRating":1}}
 </script></head>
 <body>
 <div>Автор : Хиромото Араки</div>
@@ -91,6 +120,29 @@ INKSTORY_BOOK_HTML = """
 <div>Просмотры 1 234 567</div>
 <a href="/content/steel-alchemist/chapter/1">Глава 1</a>
 <a href="/content/steel-alchemist/chapter/2">Глава 2</a>
+</body></html>
+"""
+
+#: Разметка карточки такая, как её отдаёт сайт: метка в <span class="w-36">,
+#: значение — во вложенном <div>. Списки разделены «, », названия — « / ».
+INKSTORY_INFO_HTML = """
+<html><head>
+<script type="application/ld+json">
+{"@type":"ComicSeries","name":"Стальной алхимик",
+ "url":"https://inkstory.net/content/steel-alchemist",
+ "image":"https://inkstory.net/cover.jpg"}
+</script></head>
+<body>
+<div class="flex"><span class="w-36 shrink-0 text-muted-foreground">Журнал<!-- -->:</span><div><a href="/publisher/kakao-webtoon">Kakao Webtoon</a><span class="text-muted-foreground">, </span><a href="/publisher/kakaopage">KakaoPage</a></div></div>
+<div class="flex"><span class="w-36 shrink-0 text-muted-foreground">Автор<!-- -->:</span><div><a href="/publisher/chu-gong">Чхве Гён</a></div></div>
+<div class="flex"><span class="w-36 shrink-0 text-muted-foreground">Художник<!-- -->:</span><div><a href="/publisher/seong-rak-jang">Сон Рак Чан</a></div></div>
+<div class="flex"><span class="w-36 shrink-0 text-muted-foreground">Издатель<!-- -->:</span><div><a href="/publisher/komik-seyler">Komik Şeyler</a><span class="text-muted-foreground">, </span><a href="/publisher/d-and-c-media">D&amp;C Media</a></div></div>
+<div class="flex"><span class="w-36 shrink-0 text-muted-foreground">Переводчик<!-- -->:</span><div><a href="/publisher/novate">Novate</a><span class="text-muted-foreground">, </span><a href="/publisher/newbie">Ньюби</a></div></div>
+<div class="flex"><span class="w-36 shrink-0 text-muted-foreground">Другие названия:</span><div><span>Fullmetal Alchemist</span><span class="text-muted-foreground"> / </span><span>Химоку Дзикан</span></div></div>
+<div class="flex flex-col gap-0.5"><p class="text-sm font-semibold">Год выпуска</p><a href="/content?yearMin=2001">2001</a></div>
+<div class="flex flex-col gap-0.5"><p class="text-sm font-semibold">Страна оригинала</p><a href="/content?country=KOREA">Корея</a></div>
+<div class="flex flex-col gap-0.5"><p class="text-sm font-semibold">Статус оригинала</p><a href="/content?status=DONE">Завершен</a></div>
+<div class="flex flex-col gap-0.5"><p class="text-sm font-semibold">Главы</p><p>116</p></div>
 </body></html>
 """
 
@@ -179,6 +231,33 @@ class TestReManga:
         self.client(session).details("<29.04.2026>naruto_")
         url, _ = session.calls[0]
         assert "%3C29.04.2026%3Enaruto_" in url
+
+    def test_details_returns_model_with_card_only_fields(self) -> None:
+        """Карточка — источник описания, жанров, авторов и издателей."""
+        session = FakeSession({"/titles/": FakeResponse(payload=REMANGA_CARD)})
+        title = self.client(session).details("<29.04.2026>naruto_")
+        assert isinstance(title, Title)
+        assert title.description == "Наруто Uzumaki — ниндзя."
+        assert title.note == "Перевод fan-группы."
+        assert title.genres == ["Сёнен", "Боевик"]
+        assert title.categories == ["Самураи"]
+        assert title.authors == ["Eiichiro Oda", "Boichi"]
+        assert title.publishers == ["Азбука", "Bilibili Comics"]
+        assert title.age_limit == "16+"
+        assert title.has_anime is True
+        assert title.fresh_rating == 9.01
+        assert title.wallpaper == "https://remanga.org/wallpaper/naruto.jpg"
+
+    def test_details_accepts_payload_without_data_wrapper(self) -> None:
+        """Ответ иногда приходит без обёртки data — поля лежат в корне."""
+        session = FakeSession({"/titles/": FakeResponse(payload=REMANGA_CARD["data"])})
+        assert self.client(session).details("x").id == 99
+
+    def test_catalog_leaves_card_fields_empty(self) -> None:
+        session = FakeSession({"/search/catalog": FakeResponse(payload=REMANGA_PAGE)})
+        title = self.client(session).catalog(page=1)[0]
+        assert title.authors == [] and title.publishers == []
+        assert title.description is None and title.categories == []
 
     def test_chapter_pages_flattens_nested_content(self) -> None:
         chapter = {"content": [[{"link": "https://img/1.jpg"}, {"link": "https://img/2.jpg"}], {"link": "https://img/3.jpg"}]}
@@ -468,16 +547,6 @@ class TestBuZuManga:
         assert client.stats() == 22685
         assert client.total_pages() == 227
 
-    def test_enrich_fills_only_card_fields(self) -> None:
-        session = FakeSession({"/api/manga/": FakeResponse(payload=BUZU_CARD)})
-        # запись из поиска приходит почти без данных — enrich их добирает
-        manga = self.client(session).details("23313")
-        manga.description = None
-        manga.bookmarks = None
-        self.client(session).enrich([manga], delay=0)
-        assert manga.description == "Кан Гон выжил на необитаемом острове."
-        assert manga.bookmarks == 7
-
     def test_helpers(self) -> None:
         assert manga_id("2634") == "2634"
         assert manga_id("https://buzumanga.com/manga/2634-slug") == "2634"
@@ -516,6 +585,40 @@ class TestInkStory:
         assert book.status == "Завершён"
         assert book.chapters == 116
         assert book.views == 1234567
+
+    def test_details_reads_rating_from_jsonld(self) -> None:
+        """aggregateRating есть на странице книги, но не в каталоге."""
+        session = FakeSession({"/content": FakeResponse(text=INKSTORY_BOOK_HTML)})
+        book = self.client(session).details("steel-alchemist")
+        assert book.rating == 9.1
+        assert book.votes == 4200
+
+    def test_details_reads_labeled_block_of_the_site(self) -> None:
+        """Метки берутся из разметки: списки не обрезаются и не съезжают."""
+        session = FakeSession({"/content": FakeResponse(text=INKSTORY_INFO_HTML)})
+        book = self.client(session).details("steel-alchemist")
+        assert book.author == "Чхве Гён"
+        assert book.artist == "Сон Рак Чан"
+        assert book.publishers == ["Komik Şeyler", "D&C Media"]
+        assert book.translators == ["Novate", "Ньюби"]
+        assert book.journals == ["Kakao Webtoon", "KakaoPage"]
+        assert book.alt_titles == ["Fullmetal Alchemist", "Химоку Дзикан"]
+        assert book.year == 2001
+        assert book.source_name == "Корея"
+        assert book.status == "Завершен"
+        assert book.chapters == 116
+
+    def test_page_fields_parses_both_blocks(self) -> None:
+        fields = parsing.page_fields(INKSTORY_INFO_HTML)
+        assert fields["Автор"] == "Чхве Гён"
+        assert fields["Год выпуска"] == "2001"
+        assert fields["Главы"] == "116"
+        assert parsing.page_fields("<html></html>") == {}
+
+    def test_split_list(self) -> None:
+        assert parsing.split_list("A, B , C") == ["A", "B", "C"]
+        assert parsing.split_list(None) == []
+        assert parsing.split_list("A / B", separator=r"\s*/\s*") == ["A", "B"]
 
     def test_chapters_from_links(self) -> None:
         session = FakeSession({"/content": FakeResponse(text=INKSTORY_BOOK_HTML)})

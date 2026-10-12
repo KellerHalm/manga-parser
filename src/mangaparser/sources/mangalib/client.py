@@ -7,6 +7,15 @@
     /api/manga/{slug}                        — карточка
     /api/manga/{slug}/chapters               — главы
     /api/manga/{slug}/chapter/{id}           — страницы главы (URL картинок)
+
+Чего API не отдаёт (проверено запросами на api2 и api.cdnlibs.org, а также по
+бандлу фронтенда, где других адресов нет): описание, жанры, авторов, издателей,
+теги. Карточка `/api/manga/{slug}` возвращает подмножество полей каталога — без
+рейтинга. То есть это максимум, который сайт публикует программно; полные
+данные по MangaLIB лежат только в вёрстке страницы, которую собирает SPA.
+
+Поэтому источник помечен `enrichable = False`: `enrich` для него не ходит на
+сайт, чтобы не делать тысячи запросов впустую.
 """
 
 from __future__ import annotations
@@ -112,6 +121,8 @@ class MangaLibClient:
     dedupe_key = "id"
     #: Что нужно этому источнику для адресации карточки/глав.
     key_hint = "slug"
+    #: Обогащать нечего: карточка отдаёт подмножество полей каталога.
+    enrichable = False
 
     def __init__(self, session: Any | None = None, *, delay: float = DEFAULT_DELAY) -> None:
         self.http = Http(session or build_session(headers=HEADERS), error=MangaLibError)

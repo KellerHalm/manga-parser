@@ -353,32 +353,6 @@ class BuZuMangaClient:
             page += 1
             throttle.wait()
 
-    # ---------- обогащение ----------
-
-    def enrich(self, items: list[Manga], *, delay: float | None = None) -> list[Manga]:
-        """
-        Дозагружает карточки ради описания и закладок.
-
-        Медленно: один запрос на тайтл, поэтому CLI ограничивает это `--limit`.
-        Записи поиска приходят почти без данных — для них это обязательный шаг.
-        """
-        throttle = Throttle(delay if delay is not None else self.delay)
-        for manga in items:
-            try:
-                self._apply_details(manga)
-            except BuZuMangaError:
-                continue
-            throttle.wait()
-        return items
-
-    def _apply_details(self, manga: Manga) -> None:
-        """Переносит поля карточки, которых нет в списочном ответе."""
-        fresh = self.details(manga.key)
-        for field_name in ("description", "bookmarks", "original_release"):
-            value = getattr(fresh, field_name)
-            if value:
-                setattr(manga, field_name, value)
-
 
 def _clean(params: dict[str, Any]) -> dict[str, Any]:
     """Пустые параметры не отправляются: сервер трактует их как значения по умолчанию."""

@@ -20,7 +20,7 @@ from typing import Any
 from ...core.http import Http, SourceError, Throttle, build_session
 from ...core.models import Item
 from ...core.ports import Checkpoint
-from ...core.text import strip_tags
+from ...core.text import strip_tags, to_float, to_int
 from . import parsing
 
 SITE = "https://inkstory.net"
@@ -59,8 +59,17 @@ class Book(Item):
     status: str | None = None
     year: int | None = None
     views: int | None = None
+    likes: int | None = None
     #: Страна оригинала (в JSON-LD такого поля нет).
     source_name: str | None = None
+    #: Издатели («Komik Şeyler, Planet Manga»).
+    publishers: list[str] = field(default_factory=list)
+    #: Переводчики, ведущие тайтл на сайте.
+    translators: list[str] = field(default_factory=list)
+    #: Журнал, в котором выходит оригинал.
+    journals: list[str] = field(default_factory=list)
+    #: Другие названия тайтла (оригинальное, японское, альтернативное).
+    alt_titles: list[str] = field(default_factory=list)
 
     source = "inkstory"
 
@@ -75,6 +84,13 @@ class Book(Item):
 
     @classmethod
     def from_jsonld(cls, item: dict[str, Any], slug: str, url: str = "") -> Book:
+        """
+        Карточка из JSON-LD ComicSeries.
+
+        Рейтинг лежит в `aggregateRating` (ratingValue + ratingCount) — на
+        странице книги он есть, в каталоге нет, поэтому заполняется здесь.
+        """
+        aggregate = item.get("aggregateRating") or {}
         return cls(
             slug=slug,
             url=url or item.get("url") or BOOK_URL.format(slug=slug),
@@ -82,6 +98,8 @@ class Book(Item):
             cover=item.get("image"),
             description=strip_tags(item.get("description") or "") or None,
             genres=[g for g in (item.get("genre") or []) if g],
+            rating=to_float(aggregate.get("ratingValue")),
+            votes=to_int(aggregate.get("ratingCount")),
         )
 
 
@@ -189,23 +207,6 @@ class InkStoryClient:
             yield from fresh
             page += 1
             throttle.wait()
-
-    # ---------- обогащение ----------
-
-    def enrich(self, books: list[Book], *, delay: float | None = None) -> list[Book]:
-        """
-        Дозагружает карточки ради автора/года/глав. Медленно: 1 запрос на книгу.
-        """
-        pause = delay if delay is not None else self.delay
-        throttle = Throttle(pause)
-        for book in books:
-            try:
-                page = self._html(BOOK_URL.format(slug=book.slug))
-                parsing.apply_details_fields(book, page)
-            except InkStoryError:
-                continue
-            throttle.wait()
-        return books
 
 
 def build() -> InkStoryClient:

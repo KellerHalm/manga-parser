@@ -16,6 +16,15 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 
+def _as_list(value: Any) -> list[Any]:
+    """Список после выгрузки: строка -> список, None (пустой список) -> []."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    return list(value)
+
+
 class Item:
     """Общий контракт записи каталога любого источника."""
 
@@ -53,22 +62,46 @@ class Item:
         """
         Обратная операция к `flat()`: запись из выгрузки -> объект источника.
 
-        Строковые списки (жанры после склейки в CSV/JSONL) разбираются обратно,
-        иначе повторная выгрузка испортила бы тип поля.
+        Списки, склеенные в строку при выгрузке в CSV/JSONL, разбираются
+        обратно, иначе повторная выгрузка испортила бы тип поля. Пустой список
+        приходит как None — и тоже должен стать списком.
         """
         if not dataclasses.is_dataclass(cls):
             raise TypeError(f"{cls.__name__} должен быть dataclass")
-        list_fields = {
-            f.name for f in dataclasses.fields(cls) if f.type.startswith(("list", "dict", "tuple"))
-        }
+        columns = {f.name: f for f in dataclasses.fields(cls)}
         kwargs: dict[str, Any] = {}
         for key, value in row.items():
-            if key not in {f.name for f in dataclasses.fields(cls)}:
+            column = columns.get(key)
+            if column is None:
                 continue
-            if key in list_fields and isinstance(value, str):
-                value = [part.strip() for part in value.split(",") if part.strip()]
+            if column.type.startswith(("list", "tuple")):
+                value = _as_list(value)
             kwargs[key] = value
         return cls(**kwargs)
+
+
+#: Поля, которые обогащение карточкой не перезаписывает: это идентичность
+#: записи, а не содержимое карточки.
+IDENTITY_FIELDS = frozenset({"source"})
+
+
+def is_blank(value: Any) -> bool:
+    """Пустое значение: None, пустая строка или пустая коллекция."""
+    return value is None or (not isinstance(value, (int, float, bool)) and not value)
+
+
+def merge_details(row: dict[str, Any], details: dict[str, Any]) -> dict[str, Any]:
+    """
+    Досыпает поля карточки в запись каталога.
+
+    Пустые значения игнорируются: карточка отдаёт не всё, и тогда уже
+    собранное из каталога не теряется. Идентичность записи не перезаписывается.
+    """
+    for key, value in details.items():
+        if key in IDENTITY_FIELDS or is_blank(value):
+            continue
+        row[key] = value
+    return row
 
 
 @dataclass

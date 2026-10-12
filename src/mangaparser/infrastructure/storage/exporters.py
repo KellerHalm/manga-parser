@@ -59,10 +59,13 @@ def finalize(
 
     Колонки CSV считаются по объединению ключей всех записей, поэтому
     записи с разным набором полей (например, обогащённые) не теряют колонки.
+    Записи без поля-ключа не схлопываются между собой — иначе источник без
+    такого поля (slug-only каталог) потерял бы всё, кроме одной записи.
     """
     merged: dict[Any, dict[str, Any]] = {}
-    for row in rows:
-        merged.setdefault(key_of(row, key), row)
+    for position, row in enumerate(rows):
+        identity = key_of(row, key)
+        merged.setdefault(position if identity is None else identity, row)
 
     data = list(merged.values())
     out = Path(out)

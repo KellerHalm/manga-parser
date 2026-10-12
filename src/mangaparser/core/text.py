@@ -51,6 +51,36 @@ def to_int(raw: Any) -> int | None:
     return int(digits) if digits else None
 
 
+#: Суффиксы компактной записи чисел, которые выводит сайт: «73M», «826k», «2.91k».
+#: Хвост после суффикса допускается — на странице это «73M просмотров».
+_COMPACT_RE = re.compile(r"^\s*([\d.,]+)\s*([kKmMbBкмб]?)")
+
+_COMPACT_SCALE = {
+    "k": 1_000, "к": 1_000,
+    "m": 1_000_000, "м": 1_000_000,
+    "b": 1_000_000_000, "б": 1_000_000_000,
+}
+
+
+def to_compact_int(raw: Any) -> int | None:
+    """
+    «73M» -> 73000000, «826k» -> 826000, «2.91k» -> 2910.
+
+    Сайты округляют большие счётчики, поэтому «73» вместо «73M» — это в тысячу
+    раз меньше просмотров. Без суффикса число разбирается как обычное.
+    """
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return int(raw)
+    match = _COMPACT_RE.match(str(raw or "").replace("\u00a0", " ").strip())
+    if not match:
+        return to_int(raw)
+    value = to_float(match.group(1))
+    scale = _COMPACT_SCALE.get(match.group(2).lower())
+    if value is None or scale is None:
+        return to_int(raw)
+    return int(value * scale)
+
+
 def label(value: Any, key: str = "label") -> str | None:
     """API отдаёт часть полей объектом {id, label/name} — достаём строку."""
     if isinstance(value, dict):

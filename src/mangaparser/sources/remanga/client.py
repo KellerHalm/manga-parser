@@ -8,6 +8,11 @@
     /api/v2/titles/{dir}/               — карточка (поиск по dir)
     /api/v2/titles/{dir}/chapters/available/ — главы
 
+Каталог и карточка отдают разный объём: список — это срез (название, обложка,
+рейтинг, статус), а `/titles/{dir}/` добавляет описание, жанры, авторов,
+издательства, возрастное ограничение и заметку. Поэтому полные данные берутся
+командой `enrich`: `dump` быстрый, `enrich` медленный, но полный.
+
 Хост api.remanga.org за DDoS-Guard редиректит (302) на основной домен,
 поэтому включён allow_redirects.
 """
@@ -22,7 +27,7 @@ from urllib.parse import quote
 from ...core.http import Http, SourceError, Throttle, build_session
 from ...core.models import Item, extract_pages
 from ...core.ports import Checkpoint
-from ...core.text import label, to_float, to_int
+from ...core.text import label, strip_tags, to_float, to_int
 
 API = "https://api.remanga.org"
 SITE = "https://remanga.org"
@@ -39,6 +44,11 @@ HEADERS = {
     "Referer": f"{SITE}/",
     "Origin": SITE,
 }
+
+#: Типы в поле `creators`: 1 и 4 — авторы и художники, 2 и 3 — издательства
+#: и журналы. Проверено по выборке названий (Shueisha/Viz/Азбука -> 3,
+#: Kishimoto/Oda -> 4, ONE/ISSHIKI Ichika -> 1, Micro Magazine -> 2).
+CREATOR_ORGS = frozenset({2, 3})
 
 
 class ReMangaError(SourceError):
@@ -70,6 +80,17 @@ class Title(Item):
     is_erotic: bool = False
     description: str | None = None
     genres: list[str] = field(default_factory=list)
+    #: Дополнительные рубрики сайта (не жанры, а «Культивация», «В цвете»...).
+    categories: list[str] = field(default_factory=list)
+    #: Авторы и художники: 1 и 4 в типе creators.
+    authors: list[str] = field(default_factory=list)
+    #: Издательства и журналы: 2 и 3 в типе creators.
+    publishers: list[str] = field(default_factory=list)
+    age_limit: str | None = None
+    note: str | None = None
+    has_anime: bool | None = None
+    fresh_rating: float | None = None
+    wallpaper: str | None = None
 
     source = "remanga"
 
@@ -87,15 +108,25 @@ class Title(Item):
         return self.dir or self.url.rstrip("/").rsplit("/", 1)[-1]
 
     def __post_init__(self) -> None:
-        # обложки часто приходят относительным путём
-        if self.cover and self.cover.startswith("/"):
-            self.cover = f"{SITE}{self.cover}"
+        # обложки и обои часто приходят относительным путём
+        for name in ("cover", "wallpaper"):
+            value = getattr(self, name)
+            if value and value.startswith("/"):
+                setattr(self, name, f"{SITE}{value}")
 
     @classmethod
     def from_api(cls, raw: dict[str, Any]) -> Title:
+        """
+        Запись из любого ответа API — списочного и полной карточки.
+
+        Списочный ответ содержит срез (название, обложка, рейтинг), а
+        `/titles/{dir}/` добавляет описание, жанры, авторов и издателей:
+        ключи, которых нет в списке, просто остаются пустыми.
+        """
         cover = raw.get("cover") or {}
+        wallpaper = raw.get("wallpaper") or {}
         dir_ = raw.get("dir") or ""
-        genres = [label(g, "name") for g in (raw.get("genres") or [])]
+        authors, publishers = _split_creators(raw.get("creators") or [])
         return cls(
             id=raw.get("id", 0),
             name=raw.get("main_name") or "",
@@ -116,9 +147,29 @@ class Title(Item):
             is_licensed=bool(raw.get("is_licensed")),
             is_yaoi=bool(raw.get("is_yaoi")),
             is_erotic=bool(raw.get("is_erotic")),
-            description=raw.get("summary") or raw.get("description"),
-            genres=genres,
+            description=strip_tags(raw.get("description") or raw.get("summary") or "") or None,
+            genres=[label(g, "name") for g in (raw.get("genres") or [])],
+            categories=[label(g, "name") for g in (raw.get("categories") or [])],
+            authors=authors,
+            publishers=publishers,
+            age_limit=label(raw.get("age_limit"), "name"),
+            note=strip_tags(raw.get("note") or "") or None,
+            has_anime=raw.get("has_anime"),
+            fresh_rating=to_float(raw.get("fresh_rating")),
+            wallpaper=wallpaper.get("high") or wallpaper.get("mid") or wallpaper.get("low"),
         )
+
+
+def _split_creators(raw: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
+    """`creators` -> (авторы/художники, издательства/журналы)."""
+    people: list[str] = []
+    orgs: list[str] = []
+    for creator in raw:
+        name = creator.get("name")
+        if not name:
+            continue
+        (orgs if creator.get("type") in CREATOR_ORGS else people).append(name)
+    return people, orgs
 
 
 class ReMangaClient:
@@ -173,11 +224,17 @@ class ReMangaClient:
         data = self._get(SEARCH_V2, {"query": query, "page": page})
         return [Title.from_api(r) for r in data.get("results", [])], data.get("meta", {})
 
-    def details(self, dir_: str) -> dict[str, Any]:
-        # Ответ приходит без обёртки data — поля лежат в корне объекта
+    def details(self, dir_: str) -> Title:
+        """
+        Полная карточка тайтла.
+
+        Ответ приходит то с обёрткой `data`, то без неё — оба варианта
+        приводим к `Title`, чтобы карточка дополняла запись выгрузки
+        теми же полями, что и каталог (описание, жанры, авторы, издатели).
+        """
         payload = self._get(f"{API}/api/v2/titles/{self._path(dir_)}/")
         data = payload.get("data")
-        return data if isinstance(data, dict) else payload
+        return Title.from_api(data if isinstance(data, dict) else payload)
 
     def chapters(self, dir_: str) -> list[dict[str, Any]]:
         payload = self._get(f"{API}/api/v2/titles/{self._path(dir_)}/chapters/available/")

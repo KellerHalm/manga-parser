@@ -1,8 +1,8 @@
 # manga-parser
 
-Парсеры каталогов манги: **MangaLIB**, **ReManga**, **InkStory**. Один вход,
-одинаковые команды для всех источников, чистая архитектура — новый сайт
-подключается без правок логики и CLI.
+Парсеры каталогов манги: **MangaLIB**, **ReManga**, **InkStory**, **BuZuManga**,
+**Com-X**. Один вход, одинаковые команды для всех источников, чистая архитектура —
+новый сайт подключается без правок логики и CLI.
 
 ## Быстрый старт
 
@@ -13,6 +13,8 @@ python main.py                                    # список источни�
 python main.py sources                            # только источники
 python main.py mangalib search "берсерк"
 python main.py remanga  catalog --page 1
+python main.py buzumanga dump --csv --max-pages 10
+python main.py comx      search "schenok"
 python main.py inkstory dump --csv --max-pages 10
 python main.py all      search "наруто"           # по всем источникам сразу
 ```
@@ -30,7 +32,7 @@ python main.py all      search "наруто"           # по всем исто
 | `chapters`  | список глав                                            |
 | `dump`      | полный обход каталога в JSON + CSV + JSONL             |
 | `build`     | собрать JSON/CSV из чекпоинта, без единого запроса     |
-| `enrich`    | дозагрузить карточки (inkstory: автор, год, главы)     |
+| `enrich`    | дозагрузить карточки (buzumanga: описание, закладки)     |
 | `index`     | построить офлайн-индекс из выгрузок                   |
 | `offline`   | поиск по офлайн-индексу (мгновенно, без сети)         |
 | `merge`     | склеить выгрузки разных источников в один файл        |
@@ -54,6 +56,58 @@ python main.py merge data/remanga_catalog.json data/inkstory_catalog.json
 чекпоинта. `--fresh` начинает с нуля. При 429 пауза автоматически
 удваивается до 60 с.
 
+### BuZuManga: особенности сайта
+
+Сайт — SPA, в HTML данных нет, всё отдаёт JSON API:
+
+| Что            | Запрос                                          |
+|----------------|-------------------------------------------------|
+| каталог        | `/api/manga?limit=&offset=&sort=`               |
+| поиск          | `/api/manga/search?q=` (сервер даёт максимум 10) |
+| карточка       | `/api/manga/{id}`                               |
+| главы          | `/api/manga/{id}/chapters`                      |
+| страницы главы | `/api/manga/{id}/chapters/{номер}/pages`        |
+| размер базы    | `/api/manga/stats`                              |
+
+Что стоит знать:
+
+- пагинация каталога — через `offset`, а не `page` (100 записей на страницу);
+- `id` тайтла и есть ключ (`python main.py buzumanga details 2634`); slug в
+  API нет, для URL он собирается транслитерацией (`slug.py`);
+- пути картинок приходят относительными и раздаются с отдельного CDN —
+  в выгрузку пишутся как есть, абсолютный URL даёт `image_url()`;
+- сайт рвёт keep-alive после каждого ответа, поэтому клиент шлёт
+  `Connection: close`: без этого каждый второй запрос падает с
+  `ConnectionError` и обход вязнет на ретраях и 429;
+- `robots.txt` запрещает обход `/api/`, поэтому каталог выгружается для
+  личных нужд, с `--delay` и без `--fresh`-циклов по кругу. Примерно после
+  12 000 быстрых запросов сайт начинает отдавать 429 на несколько минут —
+  обход сам откатывается на паузу до 60 с и продолжает с чекпоинта.
+
+### Com-X: особенности сайта
+
+com-x.life (DLE) закрыт антибот-защитой: корень, категории и карточки отдают
+404 с редиректом на `/_c?t=...`, где браузер обязан пройти proof-of-work,
+снять отпечаток окружения (WebGL/canvas/таймзона) и детект автоматизации
+(`navigator.webdriver`, CDP). Такой обход парсер писать нельзя, поэтому
+источник берёт только то, что сайт публикует открытым — свой sitemap:
+
+| Что       | Откуда                        |
+|-----------|-------------------------------|
+| каталог   | `/sitemap.xml` -> `news_pages*.xml` |
+| всего     | 28 292 адреса, 3 сетевых запроса |
+
+Из sitemap доступны только `id`, `url`, название из slug и `lastmod`. Поэтому
+`chapters()` возвращает пусто, а `search()` ищет локально по скачанным
+sitemap (серверный `/search/` запрещён в `robots.txt` и закрыт челленджем).
+Весь обход — 3 запроса и ~3 с:
+
+```bash
+python main.py comx dump --csv
+python main.py comx search "schenok"
+python main.py comx details 34100
+```
+
 ## Архитектура
 
 Зависимости идут строго сверху вниз, обратных импортов нет.
@@ -67,7 +121,9 @@ src/mangaparser/
 │   ├── registry.py           реестр источников (единственное место перечисления)
 │   ├── mangalib/             client.py + модель Manga
 │   ├── remanga/              client.py + модель Title
-│   └── inkstory/             client.py + модель Book + parsing.py (разбор HTML)
+│   ├── inkstory/             client.py + модель Book + parsing.py (разбор HTML)
+│   ├── buzumanga/            client.py + модель Manga + slug.py (транслитерация)
+│   └── comx/                 client.py + модель Title + parsing.py (sitemap)
 ├── infrastructure/
 │   └── storage/              exporters.py, checkpoint.py, sqlite_index.py
 └── core/                     контракты и утилиты, внешних зависимостей нет
@@ -75,7 +131,7 @@ src/mangaparser/
     ├── models.py             Item, Chapter, extract_pages
     ├── http.py               сессия с ретраями, Http, Throttle
     └── text.py               strip_tags, to_float, to_int, label, dedupe
-tests/                        80 тестов без обращения к сети
+tests/                        106 тестов без обращения к сети
 data/                         выгрузки (git-ignored)
 ```
 

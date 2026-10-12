@@ -187,7 +187,7 @@ COMMANDS: list[tuple[str, str, Handler, Callable[[argparse.ArgumentParser], None
         p.add_argument("--out", default=None),
         p.add_argument("--csv", action="store_true"),
     )),
-    ("enrich", "дозагрузить карточки (inkstory)", cmd_enrich, lambda p: (
+    ("enrich", "дозагрузить карточки (inkstory, buzumanga)", cmd_enrich, lambda p: (
         p.add_argument("--out", default=None),
         p.add_argument("--limit", type=int, default=100),
         p.add_argument("--delay", type=float, default=0.7),
@@ -233,7 +233,7 @@ def split_source(argv: Sequence[str]) -> tuple[str | None, list[str]]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="main.py",
-        description="Парсеры каталогов манги (MangaLIB, ReManga, InkStory)",
+        description="Парсеры каталогов манги (MangaLIB, ReManga, InkStory, BuZuManga, Com-X)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Формат:  python main.py <источник> <команда> [аргументы]\n\n"

@@ -43,6 +43,8 @@ REGISTRY: dict[str, SourceSpec] = {
         SourceSpec("mangalib", "mangaparser.sources.mangalib.client"),
         SourceSpec("remanga", "mangaparser.sources.remanga.client"),
         SourceSpec("inkstory", "mangaparser.sources.inkstory.client"),
+        SourceSpec("buzumanga", "mangaparser.sources.buzumanga.client"),
+        SourceSpec("comx", "mangaparser.sources.comx.client"),
     )
 }
 

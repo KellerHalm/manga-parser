@@ -17,7 +17,7 @@ from ..infrastructure.storage import SqliteIndex
 from .report import Reporter
 
 #: Поля, из которых собирается поисковый документ (в порядке приоритета).
-TITLE_FIELDS = ("title", "name", "secondary_name", "another_name", "eng_name", "label")
+TITLE_FIELDS = ("title", "name", "secondary_name", "another_name", "eng_name", "alt_title", "label")
 
 
 def iter_rows(path: Path) -> Iterable[dict[str, Any]]:

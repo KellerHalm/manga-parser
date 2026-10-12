@@ -12,7 +12,7 @@ from mangaparser.sources import REGISTRY, names, resolve, resolve_many
 
 class TestRegistry:
     def test_all_sources_registered(self) -> None:
-        assert names() == ["mangalib", "remanga", "inkstory"]
+        assert names() == ["mangalib", "remanga", "inkstory", "buzumanga", "comx"]
 
     def test_resolve_unknown(self) -> None:
         with pytest.raises(KeyError):

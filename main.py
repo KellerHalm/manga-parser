@@ -6,6 +6,8 @@
     python main.py sources                            только источники
     python main.py mangalib  search "наруто"
     python main.py remanga   dump --csv --max-pages 5
+    python main.py buzumanga catalog --page 3
+    python main.py comx      search "schenok"
     python main.py inkstory  catalog --page 3
     python main.py all       search "берсерк"
     python main.py index     --catalog data/remanga_catalog.json

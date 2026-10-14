@@ -17,6 +17,13 @@ from mangaparser.sources.inkstory import parsing
 from mangaparser.sources.inkstory.client import InkStoryClient
 from mangaparser.sources.mangalib.client import MangaLibClient
 from mangaparser.sources.remanga.client import ReMangaClient, Title
+from mangaparser.sources.selfmanga import parsing as selfmanga_parsing
+from mangaparser.sources.selfmanga.client import (
+    SelfMangaClient,
+    SelfMangaError,
+    chapter_url,
+    slug_of,
+)
 from tests.conftest import FakeResponse, FakeSession
 
 MANGALIB_PAGE = {
@@ -638,3 +645,513 @@ class TestInkStory:
         self.client(session).catalog(page=3)
         _, params = session.calls[0]
         assert params == {"page": 3}
+
+
+#: Разметка SelfManga как её отдаёт сайт. Плитка каталога — это блок
+#: `div.tile.el_<id>`, внутри которого лежит попап с жанрами и описанием.
+SELFMANGA_LIST = """
+<html><body>
+  <div class="list-page-content">
+    <h5>Всего 3410</h5>
+    <div class="pagination"><a href="/list?sortType=POPULARITY&amp;offset=50" class="page-link">2</a></div>
+    <div class="tiles row">
+
+<div class="tile col-sm-6    el_9117">
+  <div class="img">
+    <div class="compact-rate " title="8.8">
+      <b class="rate-value "><span class="integer">8</span><span class="fraction">.8</span></b>
+    </div>
+    <a href="/djodjo__vpered_legenda_" class="non-hover">
+      <img class='lazy img-fluid hide-alt' src='' data-original='https://sm.one-way.work/uploads/pics/00/41/152_p.webp' title='ДжоДжо' alt='ДжоДжо'/>
+    </a>
+  </div>
+  <div class="desc">
+    <h3><a href="/djodjo__vpered_legenda_" title="ДжоДжо: Вперед Легенда!">ДжоДжо: Вперед Легенда!</a></h3>
+    <span class="badge badge-secondary amount-badge">20</span>
+    <div class="html-popover-holder popover-html_9117-CREATION" data-title="ДжоДжо">
+      <h5>JOJO: Go Legend!</h5>
+      <span class='badge badge-dark elem_genre  '>боевик</span>
+      <span class='badge badge-dark elem_genre hide '>детектив</span>
+      <div class="manga-description">2024 Год. Действие происходит в маленьком городке.</div>
+    </div>
+    <div class="tile-info">
+      <a href="/list/person/doctor_moro" hidePic="true" class="person-link">Доктор Моро</a>
+      <a href="/list/genre/action" class="badge badge-light element-link">боевик</a>
+    </div>
+  </div>
+  <div class="chapters-text"></div>
+</div>
+
+<div class="tile col-sm-6  manga-mtr  el_9403">
+  <div class="img">
+    <div class="compact-rate " title="9.2"><b class="rate-value "><span class="integer">9</span></b></div>
+    <a href="/odnajdy_v_lesu" class="non-hover">
+      <img class='lazy' src='' data-original="https://sm.one-way.work/uploads/pics/00/42/721_p.webp"/>
+    </a>
+  </div>
+  <div class="desc">
+    <h3><a href="/odnajdy_v_lesu" title="Однажды в лесу">Однажды в лесу</a></h3>
+    <span class="badge badge-secondary amount-badge">66</span>
+    <div class="html-popover-holder popover-html_9403-CREATION">
+      <h5>Once upon a time in the forest</h5>
+      <span class='badge badge-dark elem_genre  '>драма</span>
+      <div class="manga-description">Дети находят дневник матери.</div>
+    </div>
+    <div class="tile-info"><a href="/list/person/yulia" class="person-link">Юлия</a></div>
+  </div>
+</div>
+
+    </div>
+  </div>
+</body></html>
+"""
+
+#: Страница карточки: блоки cr-* и список глав в таблице.
+SELFMANGA_CARD = """
+<html><body>
+  <div class="" id="mangaBox">
+  <meta itemprop="description" content="Действие происходит в маленьком городке - Юрга."/>
+  <div class="cr-hero ">
+    <div class="cr-hero-overlay cr-hero-overlay--poster">
+      <div class="cr-hero-overlay__bg lazyloading" data-bg="https://sm.one-way.work/uploads/pics/00/41/152_o.png"></div>
+    </div>
+    <div class="cr-hero-poster main-carousel">
+      <img src="https://sm.one-way.work/uploads/pics/00/41/152.webp" class="cr-hero-poster__img " alt="ДжоДжо"/>
+      <img data-src="https://sm.one-way.work/uploads/pics/00/41/265.webp" class="cr-hero-poster__img lazyloading"/>
+    </div>
+    <div class="cr-hero-rating">
+      <div class="cr-hero-rating__item cr-hero-rating__item--main">
+        <strong class="cr-hero-rating__value" data-rating-status="positive">8.8</strong>
+        <div class="cr-hero-rating__text">33 оценки</div>
+      </div>
+      <div class="cr-hero-rating__item cr-hero-rating__item--details" data-rating-type="story">
+        <i class="cr-hero-rating__icon fas fa-scroll-old"></i><span class="cr-hero-rating__value">9</span>
+      </div>
+      <div class="cr-hero-rating__item cr-hero-rating__item--details" data-rating-type="characters">
+        <i class="cr-hero-rating__icon fas fa-user-crown"></i><span class="cr-hero-rating__value">9.2</span>
+      </div>
+      <div class="cr-hero-rating__item cr-hero-rating__item--details" data-rating-type="world">
+        <i class="cr-hero-rating__icon fas fa-globe-europe"></i><span class="cr-hero-rating__value">9.6</span>
+      </div>
+    </div>
+    <div class="cr-hero-short-details">
+      <a class="cr-hero-short-details__item text-danger" href="/list/limitation/pg">PG</a>
+      <div class="cr-hero-short-details__item"><a href="/list/category/doujinshi" class="element-link">Додзинси</a></div>
+      <div class="cr-hero-short-details__item"><a href="/list/year/2024">2024 г.</a></div>
+      <div class="cr-hero-short-details__item"><i class="fas fa-fire-alt"></i><i class="fas fa-fire-alt"></i></div>
+    </div>
+    <meta itemprop="name" content="ДжоДжо: Вперед Легенда!"/>
+    <meta itemprop="alternativeHeadline" content="JOJO: Go Legend!"/>
+    <div class="cr-hero-names">
+      <h1 class="cr-hero-names__main line-clamp-2">ДжоДжо: Вперед Легенда!</h1>
+    </div>
+    <a href="/internal/edit/edit/9117" class="cr-actions-compact__item">Редактировать</a>
+  </div>
+
+  <div class="cr-info-details">
+    <div class="cr-info-details-item ">
+      <div class="cr-info-details-item__title">Выпуск</div>
+      <div class="cr-info-details-item__content">
+        <span class="cr-info-details-item__status" data-production-status="PROGRESS">Продолжается</span>
+      </div>
+    </div>
+    <div class="cr-info-details-item ">
+      <div class="cr-info-details-item__title">Томов</div>
+      <div class="cr-info-details-item__content">1</div>
+    </div>
+  </div>
+
+  <div class="cr-description"><div class="cr-description__content" itemprop="description"><p>&nbsp;Действие происходит.</p></div><button>x</button></div>
+
+  <div class="creation-element-tags" data-expandable="rows-limit">
+    <div class="creation-element-tags__content">
+      <div class="creation-element-tags__wrapper">
+        <a class="creation-element-tags__item creation-element-tags__item--misc" href="/list/another/beginner"><span>Начинающий</span></a>
+      </div>
+      <div class="creation-element-tags__wrapper">
+        <a class="creation-element-tags__item" href="/list/genre/action"><span>боевик</span></a>
+      </div>
+      <div class="creation-element-tags__wrapper">
+        <a class="creation-element-tags__item" href="/list/genre/detective"><span>детектив</span></a>
+      </div>
+    </div>
+  </div>
+
+  <div class="cr-main-persons">
+    <div class="cr-main-person-item ">
+      <div class="cr-main-person-item__covers">
+        <a href="/list/person/doctor_moro"><img class="cr-main-person-item__cover" src="" data-original="/a.webp"/></a>
+      </div>
+      <div class="cr-main-person-item__body">
+        <div class="cr-main-person-item__role text-truncate" data-tab-target="#tab-persons">Автор</div>
+        <div class="line-clamp-2">
+          <span class="cr-main-person-item__name text-truncate"><a href="/list/person/doctor_moro">Доктор Моро</a></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cr-tabs-list__item" role="tab" data-bs-target="#tab-content">
+      <span data-tab-text="Главы">Главы</span>
+      <span class="cr-tabs-list__label">20</span>
+  </div>
+
+  <div class="cr-info-panel">
+    <div class="cr-stats">
+      <div class="cr-stats-item" data-type-id="reading_now_count">
+        <div class="cr-stats-item__text">
+          <div class="cr-stats-item__name text-truncate">Читали недавно</div>
+          <div class="cr-stats-item__value">13</div>
+        </div>
+      </div>
+      <div class="cr-stats-item" data-type-id="watching">
+        <div class="cr-stats-item__text">
+          <div class="cr-stats-item__name text-truncate">В процессе</div>
+          <div class="cr-stats-item__value">18</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal fade" id="alt-names-dialog"><div class="modal-body">
+      <h5 class="m-0">Название на русском</h5><div class="py-1">ДжоДжо: Вперед Легенда!</div>
+      <h5 class="m-0">Название на английском</h5><div class="py-1">JOJO: Go Legend!</div>
+      <h5 class="m-0">Оригинальное название</h5><div class="py-1">JoJo</div>
+  </div></div>
+
+  <div class="tab-pane" id="tab-content">
+    <div class="chapters " id="chapters-list" data-type="MANGA" data-id="9117">
+      <table class="table table-hover">
+
+  <tr class="item-row" data-id="78761" data-vol="5" data-num="200">
+    <td class="item-status "><i class="chapter-status item-unvisited"></i></td>
+    <td class=" item-title" data-vol="5" data-num="200">
+        <a href="/djodjo__vpered_legenda_/vol5/20" title="Доктор Моро Автор" class="chapter-link cp-l">
+          5 - 20 Radiohead и Purple Zone (2)
+        </a>
+    </td>
+    <td class="d-none d-sm-table-cell date text-right " title=""
+        data-date="02.03.26" data-date-raw="2026-03-02 17:05:21.005">02.03.26</td>
+  </tr>
+
+  <tr class="item-row" data-id="78555" data-vol="5" data-num="190">
+    <td class=" item-title" data-vol="5" data-num="190">
+        <a href="/djodjo__vpered_legenda_/vol5/19#comm_437749&amp;page=4" title="Доктор Моро Автор" class="chapter-link cp-l">
+          5 - 19 Rock The Casbah (1)
+        </a>
+    </td>
+    <td class="date" data-date="15.01.26" data-date-raw="2026-01-15 18:37:35.993">15.01.26</td>
+  </tr>
+
+      </table>
+    </div>
+  </div>
+  </div>
+</body></html>
+"""
+
+SELFMANGA_READER = """
+<html><head><script>
+  var current_page_is_reader = true;
+</script></head><body>
+<script type="text/javascript">
+  var prevLink = false;
+  var nextChapterLink = "/djodjo__vpered_legenda_/vol1/2";
+  var chapterInfo = {'id': 9117, 'type': 'MANGA', 'vol': 1, 'num': 10, 'siteId': '3'};
+  rm_h.readerInit(chapterInfo, [['https://sm.one-way.work/','',"auto/09/40/88/01_res.jpg?t=1792007230&u=0&h=CBJS",2060,3000, ''],['https://sm.one-way.work/','',"auto/09/40/88/02_res.jpg?t=1792007230&u=0&h=QXk5",2183,3000, 'https://gr.one-way.work/preview/02.jpg']]);
+</script>
+</body></html>
+"""
+
+SELFMANGA_SUGGEST = {
+    "query": "джоджо",
+    "suggestions": [
+        {
+            "value": "ДжоДжо: Вперед Легенда!",
+            "elementId": {"federationUID": "3:M:9117", "externalId": 9117},
+            "link": "/djodjo__vpered_legenda_",
+            "thumbnail": "https://sm.one-way.work/uploads/pics/00/41/152_p.webp",
+            "additional": "Доктор Моро",
+            "names": ["JoJo"],
+        }
+    ],
+}
+
+
+class TestSelfManga:
+    def client(self, session: FakeSession) -> SelfMangaClient:
+        return SelfMangaClient(session=session, delay=0)
+
+    @staticmethod
+    def session(**_: object) -> FakeSession:
+        return FakeSession({
+            "/search/advancedResults": FakeResponse(text=SELFMANGA_LIST),
+            "/search/suggestion": FakeResponse(payload=SELFMANGA_SUGGEST),
+            "/djodjo__vpered_legenda_/vol1/1": FakeResponse(text=SELFMANGA_READER),
+            "/djodjo__vpered_legenda_": FakeResponse(text=SELFMANGA_CARD),
+            "/list": FakeResponse(text=SELFMANGA_LIST),
+        })
+
+    # ---------- каталог ----------
+
+    def test_catalog_maps_tiles(self) -> None:
+        session = self.session()
+        manga = self.client(session).catalog(page=1)
+        assert len(manga) == 2
+
+        first = manga[0]
+        assert first.id == 9117
+        assert first.uid == "9117"
+        assert first.key == "djodjo__vpered_legenda_"
+        assert first.title == "ДжоДжо: Вперед Легенда!"
+        assert first.alt_title == "JOJO: Go Legend!"
+        assert first.url == "https://1.selfmanga.live/djodjo__vpered_legenda_"
+        assert first.cover == "https://sm.one-way.work/uploads/pics/00/41/152_p.webp"
+        assert first.rating == 8.8
+        assert first.chapters == 20
+        assert first.author == "Доктор Моро"
+        assert first.flat()["source"] == "selfmanga"
+
+    def test_catalog_takes_full_genres_and_description_from_popover(self) -> None:
+        """Плитка отдаёт больше, чем видно без наведения мыши: попап внутри неё."""
+        manga = self.client(self.session()).catalog(page=1)[0]
+        assert manga.genres == ["боевик", "детектив"]  # скрытые бейджи тоже считаются
+        assert manga.description == "2024 Год. Действие происходит в маленьком городке."
+
+    def test_catalog_tiles_do_not_leak_into_each_other(self) -> None:
+        """Жанры второй плитки не должны попасть в первую."""
+        manga = self.client(self.session()).catalog(page=1)
+        assert manga[1].genres == ["драма"]
+        assert manga[1].title == "Однажды в лесу"
+        assert manga[1].chapters == 66
+
+    def test_catalog_page_becomes_offset(self) -> None:
+        session = self.session()
+        self.client(session).catalog(page=3, sort="created")
+        url, params = session.calls[0]
+        assert url.endswith("/list")
+        assert params == {"sortType": "created", "offset": 100}
+
+    def test_catalog_first_page_sends_no_offset(self) -> None:
+        session = self.session()
+        self.client(session).catalog()
+        _, params = session.calls[0]
+        assert params == {"sortType": "POPULARITY"}
+
+    def test_unknown_sort_falls_back_to_default(self) -> None:
+        session = self.session()
+        self.client(session).catalog(sort="что-то")
+        _, params = session.calls[0]
+        assert params == {"sortType": "POPULARITY"}
+
+    # ---------- поиск ----------
+
+    def test_search_passes_query(self) -> None:
+        session = self.session()
+        results = self.client(session).search("джоджо", page=2)
+        url, params = session.calls[0]
+        assert url.endswith("/search/advancedResults")
+        assert params == {"q": "джоджо", "offset": 50}
+        assert [m.id for m in results] == [9117, 9403]
+
+    def test_search_without_query_is_error(self) -> None:
+        session = self.session()
+        try:
+            self.client(session).search("   ")
+        except SelfMangaError as exc:
+            assert "Пустой поисковый запрос" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("ожидалась ошибка")
+
+    def test_suggest_reads_json(self) -> None:
+        session = self.session()
+        rows = self.client(session).suggest("джоджо")
+        assert session.calls[0][0].endswith("/search/suggestion")
+        assert rows[0]["value"] == "ДжоДжо: Вперед Легенда!"
+        assert rows[0]["elementId"]["externalId"] == 9117
+
+    # ---------- карточка ----------
+
+    def test_details_fills_card_only_fields(self) -> None:
+        session = self.session()
+        manga = self.client(session).details("djodjo__vpered_legenda_")
+        assert session.calls[0][0].endswith("/djodjo__vpered_legenda_")
+        assert manga.id == 9117
+        assert manga.title == "ДжоДжо: Вперед Легенда!"
+        assert manga.description == "Действие происходит в маленьком городке - Юрга."
+        assert manga.cover == "https://sm.one-way.work/uploads/pics/00/41/152.webp"
+        assert manga.wallpaper == "https://sm.one-way.work/uploads/pics/00/41/152_o.png"
+        assert manga.rating == 8.8
+        assert manga.votes == 33
+        assert manga.story_rating == 9.0
+        assert manga.characters_rating == 9.2
+        assert manga.world_rating == 9.6
+        assert manga.chapters == 20
+        assert manga.status == "Продолжается"
+        assert manga.production_status == "PROGRESS"
+        assert manga.volumes == 1
+        assert manga.age_rating == "PG"
+        assert manga.category == "Додзинси"
+        assert manga.year == 2024
+        assert manga.popularity == 2
+        assert manga.genres == ["боевик", "детектив"]
+        assert manga.tags == ["Начинающий"]
+        assert manga.author == "Доктор Моро"
+        assert manga.people == ["Автор: Доктор Моро"]
+        assert manga.stats == ["Читали недавно: 13", "В процессе: 18"]
+        assert manga.alt_titles == ["JOJO: Go Legend!", "JoJo"]
+
+    def test_details_accepts_url_and_chapter_link(self) -> None:
+        session = self.session()
+        self.client(session).details("https://1.selfmanga.live/djodjo__vpered_legenda_/vol5/20")
+        assert session.calls[0][0].endswith("/djodjo__vpered_legenda_")
+
+    def test_details_without_slug_is_error(self) -> None:
+        session = self.session()
+        try:
+            self.client(session).details("///")
+        except SelfMangaError as exc:
+            assert "slug" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("ожидалась ошибка")
+
+    def test_details_of_broken_page_is_error(self) -> None:
+        session = FakeSession({"/list": FakeResponse(text=SELFMANGA_LIST), "/broken": FakeResponse(text="<html/>")})
+        try:
+            self.client(session).details("broken")
+        except SelfMangaError as exc:
+            assert "разобрать" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("ожидалась ошибка")
+
+    # ---------- главы ----------
+
+    def test_chapters_take_number_from_url(self) -> None:
+        """В data-num лежит внутренний счётчик (200), а номер главы — в URL."""
+        session = self.session()
+        chapters = self.client(session).chapters("djodjo__vpered_legenda_")
+        assert len(chapters) == 2
+
+        first = chapters[0]
+        assert first["id"] == 78761
+        assert first["vol"] == 5
+        assert first["num"] == 200
+        assert first["number"] == 20
+        assert first["title"] == "Radiohead и Purple Zone (2)"
+        assert first["label"] == "5 - 20 Radiohead и Purple Zone (2)"
+        assert first["uploader"] == "Доктор Моро Автор"
+        assert first["url"] == "https://1.selfmanga.live/djodjo__vpered_legenda_/vol5/20"
+        assert first["date"] == "02.03.26"
+        assert first["date_raw"] == "2026-03-02 17:05:21.005"
+
+    def test_chapter_url_loses_comment_anchor(self) -> None:
+        chapters = self.client(self.session()).chapters("djodjo__vpered_legenda_")
+        assert chapters[1]["url"].endswith("/vol5/19")
+
+    def test_chapter_pages_join_origin_and_path(self) -> None:
+        """Ридер для гостя берёт шестой элемент кортежа, если он непустой."""
+        session = self.session()
+        pages = self.client(session).chapter_pages("djodjo__vpered_legenda_", 1, 1)
+        assert session.calls[0][0].endswith("/djodjo__vpered_legenda_/vol1/1")
+        assert pages == [
+            "https://sm.one-way.work/auto/09/40/88/01_res.jpg?t=1792007230&u=0&h=CBJS",
+            "https://gr.one-way.work/preview/02.jpg",
+        ]
+
+    def test_chapter_pages_accept_ready_url(self) -> None:
+        """Адрес из chapters() можно передать как есть, не разбирая обратно."""
+        session = self.session()
+        self.client(session).chapter_pages("https://1.selfmanga.live/djodjo__vpered_legenda_/vol1/1")
+        assert session.calls[0][0].endswith("/djodjo__vpered_legenda_/vol1/1")
+
+        session = self.session()
+        self.client(session).chapter_pages("/djodjo__vpered_legenda_/vol1/1")
+        assert session.calls[0][0] == "https://1.selfmanga.live/djodjo__vpered_legenda_/vol1/1"
+
+    def test_chapter_url_needs_vol_or_href(self) -> None:
+        assert chapter_url("slug", 5, 20) == "https://1.selfmanga.live/slug/vol5/20"
+        assert chapter_url("https://1.selfmanga.live/slug/vol1/2") == "https://1.selfmanga.live/slug/vol1/2"
+        assert chapter_url("/slug/vol1/2") == "https://1.selfmanga.live/slug/vol1/2"
+        try:
+            chapter_url("просто тайтл")
+        except SelfMangaError as exc:
+            assert "volV/N" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("ожидалась ошибка")
+
+    # ---------- размер базы и обход ----------
+
+    def test_stats_and_total_pages(self) -> None:
+        client = self.client(self.session())
+        assert client.stats() == 3410
+        assert client.total_pages() == 69
+
+    def test_iter_catalog_writes_checkpoint_and_stops_on_empty(self, tmp_path) -> None:
+        page = FakeResponse(text=SELFMANGA_LIST)
+        empty = FakeResponse(text="<html><h5>Всего 0</h5></html>")
+        state = {"calls": 0}
+
+        def responder(url, params):
+            state["calls"] += 1
+            return empty if state["calls"] > 1 else page
+
+        session = FakeSession({"/list": responder})
+        client = self.client(session)
+
+        from mangaparser.infrastructure.storage import JsonlCheckpoint
+
+        checkpoint = JsonlCheckpoint(tmp_path / "cp.jsonl")
+        items = list(client.iter_catalog(checkpoint=checkpoint, on_page=lambda *_: None))
+        checkpoint.close()
+
+        assert [m.id for m in items] == [9117, 9403]
+        rows = [line for line in (tmp_path / "cp.jsonl").read_text(encoding="utf-8").splitlines() if line]
+        assert json.loads(rows[0])["slug"] == "djodjo__vpered_legenda_"
+
+    def test_iter_catalog_respects_max_pages(self) -> None:
+        session = self.session()
+        items = list(self.client(session).iter_catalog(max_pages=1, on_page=lambda *_: None))
+        assert len(items) == 2
+        assert len(session.calls) == 1
+
+    # ---------- разбор ----------
+
+    def test_parsing_helpers(self) -> None:
+        assert selfmanga_parsing.catalog_total("<h5>Всего 3410</h5>") == 3410
+        assert selfmanga_parsing.catalog_total("<h1>Всего 3410</h1>") is None
+        assert selfmanga_parsing.catalog_total("") is None
+        assert selfmanga_parsing.tiles("<html>нет плиток</html>") == []
+        assert selfmanga_parsing.reader_pages("<html>нет ридера</html>") == []
+        assert selfmanga_parsing.text_of("<p>  &laquo;текст&raquo; </p>") == "«текст»"
+        assert selfmanga_parsing.text_of("") is None
+        assert selfmanga_parsing.manga_id_of("<html/>") is None
+        assert selfmanga_parsing.info_fields("<html/>") == {}
+        assert selfmanga_parsing.alt_names("<html/>") == []
+        assert selfmanga_parsing.stats("<html/>") == {}
+
+    def test_stats_exposes_machine_keys(self) -> None:
+        assert selfmanga_parsing.stats(SELFMANGA_CARD) == {"reading_now_count": 13, "watching": 18}
+
+    def test_persons_skip_cover_block(self) -> None:
+        """Вложенный cr-main-person-item__covers не должен давать пустую персону."""
+        people = selfmanga_parsing.persons(SELFMANGA_CARD)
+        assert people == [{
+            "role": "Автор",
+            "name": "Доктор Моро",
+            "url": "/list/person/doctor_moro",
+        }]
+
+    def test_slug_of_accepts_any_user_input(self) -> None:
+        assert slug_of("djodjo__vpered_legenda_") == "djodjo__vpered_legenda_"
+        assert slug_of("https://1.selfmanga.live/djodjo__vpered_legenda_") == "djodjo__vpered_legenda_"
+        assert slug_of("/djodjo__vpered_legenda_/vol5/20") == "djodjo__vpered_legenda_"
+        assert slug_of("/a/b#comm_1&page=3") == "a"
+        assert slug_of("///") == ""
+        assert slug_of("") == ""
+
+    def test_flat_roundtrip_keeps_lists(self) -> None:
+        manga = self.client(self.session()).details("djodjo__vpered_legenda_")
+        again = type(manga).from_flat(manga.flat())
+        assert again.genres == manga.genres
+        assert again.people == manga.people
+        assert again.stats == manga.stats

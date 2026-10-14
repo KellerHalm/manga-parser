@@ -1,8 +1,8 @@
 # manga-parser
 
 Парсеры каталогов манги: **MangaLIB**, **ReManga**, **InkStory**, **BuZuManga**,
-**Com-X**. Один вход, одинаковые команды для всех источников, чистая архитектура —
-новый сайт подключается без правок логики и CLI.
+**Com-X**, **SelfManga**. Один вход, одинаковые команды для всех источников,
+чистая архитектура — новый сайт подключается без правок логики и CLI.
 
 ## Быстрый старт
 
@@ -15,6 +15,7 @@ python main.py mangalib search "берсерк"
 python main.py remanga  catalog --page 1
 python main.py buzumanga dump --csv --max-pages 10
 python main.py comx      search "schenok"
+python main.py selfmanga search "берсерк"
 python main.py inkstory dump --csv --max-pages 10
 python main.py all      search "наруто"           # по всем источникам сразу
 ```
@@ -45,6 +46,7 @@ python main.py remanga dump --max-pages 5                # первые 5 стр
 python main.py remanga details naruto                    # dir подставится сам
 python main.py remanga enrich --limit 200 --csv          # дозагрузить карточки
 python main.py inkstory enrich --limit 0 --csv           # весь каталог, без ограничения
+python main.py selfmanga enrich --limit 0 --delay 1 --csv  # весь каталог, 1 req/сек
 python main.py index --catalog data/remanga_catalog.json --reset
 python main.py offline "берсерк"
 python main.py merge data/remanga_catalog.json data/inkstory_catalog.json
@@ -77,6 +79,7 @@ python main.py remanga enrich --limit 0 --csv      # 2: дозагрузка к�
 | **ReManga**  | да       | да + рубрики `categories` | да                  | да (`authors` / `publishers`)          | возрастное ограничение, заметка, обои, наличие аниме     |
 | **InkStory** | да       | да                       | да + число голосов   | автор, художник, издатели, переводчики, журнал | страна, статус, год, главы, просмотры, лайки, другие названия |
 | **BuZuManga** | да      | да (`tags`)              | да + число голосов   | —                                      | закладки, дата оригинала, типы, возрастной рейтинг     |
+| **SelfManga**| да       | да + метки (`tags`)      | да + 3 оценки по категориям | автор, художник, сценарист (`people`) | статус выпуска, томов, частота выхода, год, тип, возрастной рейтинг, фоны, статистика читателей |
 | **MangaLIB** | —        | —                        | только из каталога   | —                                      | сайт не отдаёт это в API                                |
 | **Com-X**    | —        | —                        | —                    | —                                      | только sitemap: id, url, название, `lastmod`            |
 
@@ -150,6 +153,58 @@ python main.py comx search "schenok"
 python main.py comx details 34100
 ```
 
+### SelfManga: особенности сайта
+
+1.selfmanga.live — русский сайт авторской манги (личные тайтлы, додзинси,
+вебтуны). Публичного JSON API с данными **нет**: в оболочке объявлен
+`SERVER_API_URL = '/api'`, но этот префикс отдаёт 404, а весь контент приходит
+в HTML — сайт рендерится на сервере целиком. Поэтому используются страницы:
+
+| Что            | Запрос                                          |
+|----------------|-------------------------------------------------|
+| каталог        | `/list?sortType=<сортировка>&offset=N`, 50/стр. |
+| размер базы    | «Всего N» в заголовке `/list` (3410 тайтлов)   |
+| поиск          | `/search/advancedResults?q=<запрос>&offset=N`   |
+| подсказки      | `/search/suggestion?query=` — единственный JSON |
+| карточка       | `/<slug>`                                       |
+| главы          | разметка `/<slug>`, пагинации нет               |
+| страницы главы | `/<slug>/volV/N` -> `rm_h.readerInit(...)`       |
+
+Что стоит знать:
+
+- тайтл адресуется транслитерированным slug (`/djodjo__vpered_legenda_`), а не
+  числовым id; id есть только в разметке (`div.tile.el_9117`, `data-id` списка
+  глав) и он же используется для дедупликации выгрузки;
+- **каталог отдаёт больше, чем видно без наведения мыши**: в каждую плитку
+  вложен попап с оригинальным названием, полным списком жанров, описанием и
+  автором. `dump` поэтому уже даёт описание и жанры, а `enrich` добавляет то,
+  чего в плитке нет в принципе: статус выпуска, томов, персон с ролями, оценки
+  по категориям (сюжет/персонажи/мир), год, тип, возрастной рейтинг, фоны и
+  статистику читателей;
+- главы лежат в разметке карточки целиком (у тайтла на 300+ глав страница всё
+  равно одна), но номер главы брать нужно из URL, а не из `data-num`: там
+  лежит внутренний счётчик, 20-я глава тома 5 помечена как `data-num="200"`;
+- `robots.txt` требует `Crawl-delay: 1` и `Request-rate: 1/1`, поэтому пауза по
+  умолчанию здесь 1 с, а `/internal/*` из `robots.txt` не обходится вовсе;
+- сортировка по названию на сайте сломана: `/list?sortType=name` отдаёт первую
+  страницу, а вторая уже пустая. Обход по ней невозможен, поэтому для полного
+  каталога используются `popularity` (по умолчанию), `created`, `updated`,
+  `rating`;
+- **страницы глав (`chapter_pages`) есть не у всех глав.** Список картинок лежит
+  в разметке ридера (`rm_h.readerInit`), но сайт отдаёт его не всегда: главы
+  18+ и главы, которые ещё не опубликованы, гостю открываются как карточка
+  тайтла — без вызова `readerInit` и без картинок. В этом случае метод честно
+  возвращает пустой список; обойти это без учётной записи нельзя. Список глав
+  при этом отдаётся полностью и всегда.
+
+```bash
+python main.py selfmanga search "берсерк"             # 1 запрос, ~1 с
+python main.py selfmanga catalog --page 2
+python main.py selfmanga dump --csv                   # 3410 тайтлов, 69 страниц
+python main.py selfmanga enrich --limit 0 --csv       # + статусы, персоны, статистика
+python main.py selfmanga chapters djodjo__vpered_legenda_
+```
+
 ## Архитектура
 
 Зависимости идут строго сверху вниз, обратных импортов нет.
@@ -165,7 +220,8 @@ src/mangaparser/
 │   ├── remanga/              client.py + модель Title
 │   ├── inkstory/             client.py + модель Book + parsing.py (разбор HTML)
 │   ├── buzumanga/            client.py + модель Manga + slug.py (транслитерация)
-│   └── comx/                 client.py + модель Title + parsing.py (sitemap)
+│   ├── comx/                 client.py + модель Title + parsing.py (sitemap)
+│   └── selfmanga/            client.py + модель Manga + parsing.py (SSR-разметка)
 ├── infrastructure/
 │   └── storage/              exporters.py, checkpoint.py, sqlite_index.py
 └── core/                     контракты и утилиты, внешних зависимостей нет
@@ -173,7 +229,7 @@ src/mangaparser/
     ├── models.py             Item, Chapter, merge_details, extract_pages
     ├── http.py               сессия с ретраями, Http, Throttle
     └── text.py               strip_tags, to_float, to_int, to_compact_int, label, dedupe
-tests/                        131 тест без обращения к сети
+tests/                        157 тестов без обращения к сети
 data/                         выгрузки (git-ignored)
 ```
 

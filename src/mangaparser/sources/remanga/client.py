@@ -241,9 +241,13 @@ class ReMangaClient:
         data = payload.get("data") or payload.get("results")
         return data if isinstance(data, list) else []
 
-    @staticmethod
-    def chapter_pages(chapter: dict[str, Any]) -> list[str]:
-        """URL страниц главы — двухуровневая структура content разбирается в ядре."""
+    def chapter_pages(self, key: str, chapter: Any, **_: Any) -> list[str]:
+        """
+        URL страниц главы — сети не нужно.
+
+        ReManga отдаёт список картинок прямо в главе (`content`), поэтому
+        `key` и не используется: разбор двухуровневой структуры в ядре.
+        """
         return extract_pages(chapter)
 
     # ---------- обход каталога ----------

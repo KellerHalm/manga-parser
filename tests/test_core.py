@@ -5,7 +5,14 @@ from __future__ import annotations
 import pytest
 
 from mangaparser.core.http import Http, SourceError, Throttle
-from mangaparser.core.models import Chapter, Item, is_blank, merge_details
+from mangaparser.core.models import (
+    Chapter,
+    Item,
+    chapter_field,
+    extract_pages,
+    is_blank,
+    merge_details,
+)
 from mangaparser.core.text import dedupe, label, strip_tags, to_compact_int, to_float, to_int
 from mangaparser.sources.mangalib.client import Manga
 from mangaparser.sources.remanga.client import Title
@@ -152,6 +159,44 @@ class TestModels:
         assert chapter.flat() == {
             "id": None, "number": 1.0, "title": "Начало", "url": "https://x/1", "pages": 20,
         }
+
+    def test_chapter_field_reads_dict_and_object(self) -> None:
+        assert chapter_field({"number": 3}, "number") == 3
+        assert chapter_field(Chapter(number=4.0), "number") == 4.0
+        # значение None — это значение, а не отсутствие ключа
+        assert chapter_field({"title": None}, "title", "-") is None
+        assert chapter_field({}, "title", "-") == "-"
+        assert chapter_field({}, "url") is None
+
+    def test_extract_pages_understands_every_source_shape(self) -> None:
+        # ReManga: двухуровневый content, каждая страница — список вариантов
+        assert extract_pages({"content": [
+            [{"link": "https://img/1.jpg"}, {"link": "https://img/1-big.jpg"}],
+            [{"link": "https://img/2.jpg"}],
+        ]}) == ["https://img/1.jpg", "https://img/1-big.jpg", "https://img/2.jpg"]
+        # плоский content без вложенности
+        assert extract_pages({"content": [{"link": "https://img/1.jpg"}]}) == ["https://img/1.jpg"]
+        # pages: строки и объекты с разными именами поля
+        assert extract_pages({"pages": [
+            "https://img/1.jpg",
+            {"url": "https://img/2.jpg"},
+            {"image": "https://img/3.jpg"},
+            {"src": "https://img/4.jpg"},
+            {"broken": "https://img/5.jpg"},
+            "",
+        ]}) == [
+            "https://img/1.jpg",
+            "https://img/2.jpg",
+            "https://img/3.jpg",
+            "https://img/4.jpg",
+        ]
+
+    def test_extract_pages_of_empty_chapter(self) -> None:
+        assert extract_pages({}) == []
+        assert extract_pages({"content": []}) == []
+        # число страниц вместо списка адресов — не список и не страницы
+        assert extract_pages({"pages": 12}) == []
+        assert extract_pages(None) == []
 
     def test_manga_defaults(self) -> None:
         manga = Manga(id=7, name="Берсерк", url="https://mangalib.me/berserk", slug="berserk")

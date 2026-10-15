@@ -1,11 +1,7 @@
 [project]
 name = "manga-parser"
 version = "1.0.0"
-<<<<<<< HEAD
-description = "Парсеры каталогов манги: MangaLIB, ReManga, InkStory, BuZuManga, Com-X, Desu.Me"
-=======
-description = "Парсеры каталогов манги: MangaLIB, ReManga, InkStory, BuZuManga, Com-X, SelfManga"
->>>>>>> 2461edd3c0b5f630b93f4f89d696b9a40970d7d5
+description = "Парсеры каталогов манги: MangaLIB, ReManga, InkStory, BuZuManga, Com-X, Desu.Me, SelfManga"
 requires-python = ">=3.11"
 dependencies = [
     "requests>=2.31",

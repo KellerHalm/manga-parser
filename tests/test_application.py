@@ -5,11 +5,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from mangaparser.application import catalog as catalog_uc
 from mangaparser.application import enrich as enrich_uc
 from mangaparser.application import index as index_uc
 from mangaparser.application import merge as merge_uc
-from mangaparser.application.browse import format_details, format_row, search
+from mangaparser.application.browse import (
+    chapter_pages,
+    chapters,
+    format_chapter,
+    format_details,
+    format_row,
+    search,
+)
 from mangaparser.application.report import CollectingReporter
 from mangaparser.core.http import SourceError
 from mangaparser.core.ports import Source
@@ -39,6 +48,9 @@ class FakeSource:
 
     def chapters(self, key: str, **_: object) -> list[dict]:
         return [{"id": 1, "number": 1.0, "title": "start", "url": f"https://x/{key}/1"}]
+
+    def chapter_pages(self, key: str, chapter: dict, **_: object) -> list[str]:
+        return [f"https://img/{chapter['id']}-{index}.jpg" for index in range(3)]
 
     def iter_catalog(self, *, checkpoint=None, on_page=None, **_: object):
         seen: set[int] = set()
@@ -154,6 +166,49 @@ class TestBrowseFormatting:
         assert "Берсерк" in format_row(item)
         assert "url" in format_details(item)
         assert "url" in format_details({"url": "u", "title": "t"})
+
+    def test_chapters_show_page_count_when_source_knows_it(self) -> None:
+        """Колонка страниц заполняется тем, что глава уже знает о себе."""
+        report = CollectingReporter()
+        items = chapters(
+            FakeSource([[manga(1, "x")]]),
+            "berserk",
+            with_pages=True,
+            reporter=report,
+        )
+        assert items[0]["pages_count"] == 3
+        assert "стр.3" in format_chapter(items[0])
+
+    def test_chapters_without_with_pages_do_not_call_the_source(self) -> None:
+        source = FakeSource([[manga(1, "x")]])
+        items = chapters(source, "berserk", reporter=CollectingReporter())
+        assert "pages_count" not in items[0]
+
+    def test_chapter_pages_takes_the_first_chapter_by_default(self) -> None:
+        source = FakeSource([[manga(1, "x")]])
+        pages = chapter_pages(source, "berserk", reporter=CollectingReporter())
+        assert pages == ["https://img/1-0.jpg", "https://img/1-1.jpg", "https://img/1-2.jpg"]
+
+    def test_chapter_pages_rejects_index_out_of_range(self) -> None:
+        source = FakeSource([[manga(1, "x")]])
+        with pytest.raises(SourceError, match="Главы с номером 5 нет"):
+            chapter_pages(source, "berserk", index=5, reporter=CollectingReporter())
+
+    def test_chapter_pages_fails_when_title_has_no_chapters(self) -> None:
+        class NoChapters(FakeSource):
+            def chapters(self, key: str, **_: object) -> list[dict]:
+                return []
+
+        with pytest.raises(SourceError, match="нет глав"):
+            chapter_pages(NoChapters([]), "x", reporter=CollectingReporter())
+
+    def test_chapter_pages_limit_caps_output_only(self, capsys) -> None:
+        """`limit` ограничивает печать, а не результат — как у `chapters`."""
+        source = FakeSource([[manga(1, "x")]])
+        pages = chapter_pages(source, "x", reporter=CollectingReporter(), limit=1)
+        assert len(pages) == 3
+        printed = [line for line in capsys.readouterr().out.splitlines() if "https://img" in line]
+        assert len(printed) == 1
 
 
 class TestIndex:

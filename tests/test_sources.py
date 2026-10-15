@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from mangaparser.core.ports import Source
+from mangaparser.sources import REGISTRY
 from mangaparser.sources.buzumanga import slug
 from mangaparser.sources.buzumanga.client import (
     BuZuMangaClient,
@@ -16,8 +20,8 @@ from mangaparser.sources.comx.client import ComXClient, ComXError
 from mangaparser.sources.desu import parsing as desu_parsing
 from mangaparser.sources.desu.client import DesuClient, DesuError
 from mangaparser.sources.inkstory import parsing
-from mangaparser.sources.inkstory.client import InkStoryClient
-from mangaparser.sources.mangalib.client import MangaLibClient
+from mangaparser.sources.inkstory.client import InkStoryClient, InkStoryError
+from mangaparser.sources.mangalib.client import MangaLibClient, MangaLibError
 from mangaparser.sources.remanga.client import ReMangaClient, Title
 from mangaparser.sources.selfmanga import parsing as selfmanga_parsing
 from mangaparser.sources.selfmanga.client import (
@@ -127,9 +131,51 @@ INKSTORY_BOOK_HTML = """
 <div>Статус оригинала : Завершён</div>
 <div>Главы : 116</div>
 <div>Просмотры 1 234 567</div>
-<a href="/content/steel-alchemist/chapter/1">Глава 1</a>
-<a href="/content/steel-alchemist/chapter/2">Глава 2</a>
 </body></html>
+"""
+
+#: Вкладка «Главы» карточки. Глава адресуется uuid, читаемый номер с
+#: названием лежит в aria-label ссылки-обложки, рядом — том и дата.
+INKSTORY_CHAPTERS_HTML = """
+<html><body>
+<div class="relative w-full">
+  <a aria-label="Глава 1196: Нет ценности в любви того, кто жаждет смерти"
+     href="/content/one-piece/444e688d-e178-4893-9d8e-1f1c356ba7e0"
+     class="absolute inset-0"></a>
+  <div class="flex grow items-center justify-between gap-2">
+    <span class="mr-2 font-mono text-xs">108</span>
+    <span class="overflow-hidden text-sm">Глава 1196: Нет ценности в любви</span>
+    <span class="text-xs">15.10.2026</span>
+  </div>
+</div>
+<div class="relative w-full">
+  <a aria-label="Глава 1195: Слабость"
+     href="/content/one-piece/4b806b91-1932-4e54-9894-4d931fe7895e"
+     class="absolute inset-0"></a>
+  <div class="flex grow items-center justify-between gap-2">
+    <span class="mr-2 font-mono text-xs">108</span>
+    <span class="overflow-hidden text-sm">Глава 1195: Слабость</span>
+    <span class="text-xs">08.10.2026</span>
+  </div>
+</div>
+</body></html>
+"""
+
+#: Ридер отдаётся сервером целиком: список страниц главы лежит в payload
+#: объекта initialChapter. В этом же payload рядом лежат данные соседних
+#: глав — их страницы не должны попасть в выдачу.
+INKSTORY_READER_HTML = """
+<html><body><script>self.__nuxt={...chapters:[
+ $R[1343]={id:"9abaed37",number:1194,pages:$R[1500]=[
+   $R[1501]={id:"aa1",image:"https://static.inuko.me/chapters/d4a49ecd-85df-4ddc-bed5-72a59201660b/aa1.jpeg",index:0}]},
+ $R[1344]={id:"444e688d",number:1196,pages:$R[1342]=[
+   $R[1343]={id:"bb1",image:"https://static.inuko.me/chapters/444e688d-e178-4893-9d8e-1f1c356ba7e0/bb1.jpeg",index:0},
+   $R[1344]={id:"bb2",image:"https://static.inuko.me/chapters/444e688d-e178-4893-9d8e-1f1c356ba7e0/bb2.jpeg",index:1}]}],
+ initialChapter:$R[1341]={id:"444e688d-e178-4893-9d8e-1f1c356ba7e0",name:"Нет ценности",
+   title:null,number:1196,volume:108,pages:$R[1342]=[
+   $R[1343]={id:"bb1",image:"https://static.inuko.me/chapters/444e688d-e178-4893-9d8e-1f1c356ba7e0/bb1.jpeg",index:0},
+   $R[1344]={id:"bb2",image:"https://static.inuko.me/chapters/444e688d-e178-4893-9d8e-1f1c356ba7e0/bb2.jpeg",index:1}]}}
+</script></body></html>
 """
 
 #: Разметка карточки такая, как её отдаёт сайт: метка в <span class="w-36">,
@@ -178,6 +224,22 @@ class TestMangaLib:
         self.client(session).search("берсерк")
         _, params = session.calls[0]
         assert params["q"] == "берсерк"
+
+    def test_chapter_pages_addressed_by_chapter_id(self) -> None:
+        payload = {"data": [
+            {"id": 1, "img": {"default": "https://img.mangalib/1.jpg"}},
+            {"id": 2, "img": {"original": "https://img.mangalib/2.jpg"}},
+            {"id": 3, "img": {}},
+        ]}
+        session = FakeSession({"/api/manga/berserk/chapter/": FakeResponse(payload=payload)})
+        pages = self.client(session).chapter_pages("berserk", {"id": 42})
+        # без адреса страница не добавляется, порядок сохраняется
+        assert pages == ["https://img.mangalib/1.jpg", "https://img.mangalib/2.jpg"]
+        assert session.calls[0][0].endswith("/api/manga/berserk/chapter/42")
+
+    def test_chapter_pages_without_id_is_an_error(self) -> None:
+        with pytest.raises(MangaLibError):
+            self.client(FakeSession({})).chapter_pages("berserk", {"number": 1})
 
     def test_iter_catalog_writes_checkpoint_and_stops_on_empty(self, tmp_path) -> None:
         page = FakeResponse(payload=MANGALIB_PAGE)
@@ -270,7 +332,8 @@ class TestReManga:
 
     def test_chapter_pages_flattens_nested_content(self) -> None:
         chapter = {"content": [[{"link": "https://img/1.jpg"}, {"link": "https://img/2.jpg"}], {"link": "https://img/3.jpg"}]}
-        assert ReMangaClient.chapter_pages(chapter) == [
+        client = ReMangaClient(session=FakeSession({}))
+        assert client.chapter_pages("berserk_of_gluttony_", chapter) == [
             "https://img/1.jpg", "https://img/2.jpg", "https://img/3.jpg",
         ]
 
@@ -417,6 +480,11 @@ class TestComX:
     def test_chapters_are_unavailable(self) -> None:
         assert self.client(self.session()).chapters("34100") == []
 
+    def test_chapter_pages_fail_loudly(self) -> None:
+        """Пустой список выглядел бы как «главы без картинок» — поэтому ошибка."""
+        with pytest.raises(ComXError, match="челлендж"):
+            self.client(self.session()).chapter_pages("34100", {})
+
     def test_iter_catalog_writes_checkpoint(self, tmp_path) -> None:
         client = self.client(self.session())
 
@@ -525,8 +593,17 @@ class TestBuZuManga:
     def test_chapter_pages_addressed_by_number(self) -> None:
         payload = {"pages": ["/objects/h/uploads/pages/1.jpg", "/objects/h/uploads/pages/2.jpg"]}
         session = FakeSession({"/pages": FakeResponse(payload=payload)})
-        assert self.client(session).chapter_pages("2634", 1) == payload["pages"]
+        pages = self.client(session).chapter_pages("2634", {"number": 1})
+        # API отдаёт пути относительные — без префикса CDN их не скачать
+        assert pages == [
+            image_url(payload["pages"][0]),
+            image_url(payload["pages"][1]),
+        ]
         assert session.calls[0][0].endswith("/api/manga/2634/chapters/1/pages")
+
+    def test_chapter_pages_without_number_is_an_error(self) -> None:
+        with pytest.raises(BuZuMangaError):
+            self.client(FakeSession({})).chapter_pages("2634", {"id": 1})
 
     def test_iter_catalog_writes_checkpoint_and_stops_on_empty(self, tmp_path) -> None:
         page = FakeResponse(payload=[BUZU_ITEM])
@@ -630,10 +707,60 @@ class TestInkStory:
         assert parsing.split_list("A / B", separator=r"\s*/\s*") == ["A", "B"]
 
     def test_chapters_from_links(self) -> None:
-        session = FakeSession({"/content": FakeResponse(text=INKSTORY_BOOK_HTML)})
-        chapters = self.client(session).chapters("steel-alchemist")
+        """Глава адресуется uuid, номер и название берутся из aria-label ссылки."""
+        session = FakeSession({"/chapters": FakeResponse(text=INKSTORY_CHAPTERS_HTML)})
+        chapters = self.client(session).chapters("one-piece")
         assert len(chapters) == 2
-        assert chapters[0]["url"] == "https://inkstory.net/content/steel-alchemist/chapter/1"
+        first, second = chapters
+        assert first["url"] == (
+            "https://inkstory.net/content/one-piece/444e688d-e178-4893-9d8e-1f1c356ba7e0"
+        )
+        assert first["id"] == "444e688d-e178-4893-9d8e-1f1c356ba7e0"
+        assert first["number"] == 1196.0
+        assert first["title"] == "Нет ценности в любви того, кто жаждет смерти"
+        assert first["volume"] == 108
+        assert first["date"] == "15.10.2026"
+        assert second["number"] == 1195.0
+        assert second["title"] == "Слабость"
+
+    def test_chapters_tolerates_missing_volume_and_date(self) -> None:
+        html = '<a aria-label="Глава 7" href="/content/x/aaaaaaaa-1111-2222-3333-444444444444"></a>'
+        assert parsing.chapters_from_page(html, "https://inkstory.net") == [{
+            "id": "aaaaaaaa-1111-2222-3333-444444444444",
+            "number": 7.0,
+            "title": None,
+            "label": "Глава 7",
+            "volume": None,
+            "date": None,
+            "url": "https://inkstory.net/content/x/aaaaaaaa-1111-2222-3333-444444444444",
+        }]
+
+    def test_chapter_pages_from_reader_payload(self) -> None:
+        session = FakeSession({
+            "/chapters": FakeResponse(text=INKSTORY_CHAPTERS_HTML),
+            "/444e688d": FakeResponse(text=INKSTORY_READER_HTML),
+        })
+        chapters = self.client(session).chapters("one-piece")
+        pages = self.client(session).chapter_pages("one-piece", chapters[0])
+        # страницы соседней главы из payload не подмешиваются
+        assert pages == [
+            "https://static.inuko.me/chapters/444e688d-e178-4893-9d8e-1f1c356ba7e0/bb1.jpeg",
+            "https://static.inuko.me/chapters/444e688d-e178-4893-9d8e-1f1c356ba7e0/bb2.jpeg",
+        ]
+
+    def test_chapter_pages_falls_back_to_id_of_the_chapter(self) -> None:
+        """Без `url` в записи адрес главы собирается из slug и её id."""
+        session = FakeSession({"/aaaaaaaa": FakeResponse(text=INKSTORY_READER_HTML)})
+        self.client(session).chapter_pages(
+            "one-piece", {"id": "aaaaaaaa-1111-2222-3333-444444444444"}
+        )
+        assert session.calls[0][0].endswith(
+            "/content/one-piece/aaaaaaaa-1111-2222-3333-444444444444"
+        )
+
+    def test_chapter_pages_without_id_is_an_error(self) -> None:
+        with pytest.raises(InkStoryError):
+            self.client(FakeSession({})).chapter_pages("one-piece", {})
 
     def test_parsing_helpers(self) -> None:
         assert parsing.jsonld_nodes("<html>нет разметки</html>") == []
@@ -649,7 +776,6 @@ class TestInkStory:
         assert params == {"page": 3}
 
 
-<<<<<<< HEAD
 DESU_SITEMAP = """<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 <url><loc>https://desu.uno/</loc></url>
@@ -769,6 +895,19 @@ title="Том 1. Глава 0: Пролог">Том 1. Глава 0</a></h4>
 #: Страница-заглушка вместо карточки: сайт отдаёт её вместо 451 и 401.
 DESU_ERROR_HTML = "<html><head><title>Desu.Me - Ошибка</title></head><body>Ошибка</body></html>"
 
+#: Страница главы: картинок в разметке нет, ридер получает их запросом к API.
+#: Адрес API и id главы приходят в конфигурации `window.MangaReader`.
+DESU_READER_HTML = """<html><head><script>
+window.MangaReader = {"manga":{"id":12,"name":"One Piece","kind":"manga"},
+"chapter":{"id":189239,"volume":"1","number":"1","title":"На заре приключений"},
+"apiBaseUrl":"/api/manga/12","visitor":{"isLoggedIn":false},"flags":{"adsEnabled":true}};
+</script></head><body><div id="reader"></div></body></html>"""
+
+DESU_PAGES_JSON = {"chapter": {"id": 189239, "number": "1", "pages": [
+    {"page": 1, "url": "https://img2.desu.uno/manga/rus/one_piece/vol01_ch001/p001.jpg", "width": 1055},
+    {"page": 2, "url": "https://img2.desu.uno/manga/rus/one_piece/vol01_ch001/p002.jpg", "width": 2110},
+]}}
+
 
 class TestDesu:
     def client(self, session: FakeSession) -> DesuClient:
@@ -887,9 +1026,96 @@ class TestDesu:
 
     def test_iter_catalog_writes_checkpoint(self, tmp_path) -> None:
         client = self.client(self.session())
-=======
-#: Разметка SelfManga как её отдаёт сайт. Плитка каталога — это блок
-#: `div.tile.el_<id>`, внутри которого лежит попап с жанрами и описанием.
+
+        from mangaparser.infrastructure.storage import JsonlCheckpoint
+
+        checkpoint = JsonlCheckpoint(tmp_path / "cp.jsonl")
+        items = list(client.iter_catalog(count=2, checkpoint=checkpoint, on_page=lambda *_: None))
+        checkpoint.close()
+
+        assert [t.id for t in items] == [1, 12, 368]
+        rows = [line for line in (tmp_path / "cp.jsonl").read_text(encoding="utf-8").splitlines() if line]
+        assert json.loads(rows[1])["slug"] == "one-piece"
+
+    # ---------- страницы глав ----------
+
+    @staticmethod
+    def reader_session() -> FakeSession:
+        # фейковая сессия сверяет адрес по вхождению, поэтому более специфичный
+        # фрагмент страницы главы должен идти раньше адреса карточки
+        return FakeSession({
+            "/vol1/ch1/rus": FakeResponse(text=DESU_READER_HTML),
+            "/api/manga/12/chapters/189239": FakeResponse(payload=DESU_PAGES_JSON),
+            "/sitemap.php": FakeResponse(text=DESU_SITEMAP),
+            "/manga/one-piece.12/": FakeResponse(text=DESU_CARD_HTML),
+        })
+
+    def test_chapter_pages_read_first_chapter_of_the_volume(self) -> None:
+        """Единственная страница главы, разрешённая robots.txt, — vol*/ch1/rus."""
+        session = self.reader_session()
+        pages = self.client(session).chapter_pages("one-piece.12", {
+            "url": "https://desu.uno/manga/one-piece.12/vol1/ch1/rus",
+        })
+        assert pages == [page["url"] for page in DESU_PAGES_JSON["chapter"]["pages"]]
+        # сперва ридер (адрес API и id главы), потом сам список страниц
+        assert [url for url, _ in session.calls[-2:]] == [
+            "https://desu.uno/manga/one-piece.12/vol1/ch1/rus",
+            "https://desu.uno/api/manga/12/chapters/189239",
+        ]
+
+    def test_chapter_pages_refuse_chapters_closed_by_robots(self) -> None:
+        """Запрет robots.txt не обходится: вместо страниц — честная ошибка."""
+        session = self.reader_session()
+        client = self.client(session)
+        before = len(session.calls)
+        with pytest.raises(DesuError, match="robots"):
+            client.chapter_pages("one-piece.12", {
+                "url": "https://desu.uno/manga/one-piece.12/vol108/ch1196/rus",
+            })
+        # ни одного запроса к закрытой странице не ушло
+        assert len(session.calls) == before
+
+    def test_robots_free_chapter_matching(self) -> None:
+        # разрешён ровно `vol*/ch1/rus` — с языковым хвостом, как в robots.txt
+        assert desu_parsing.is_robots_free_chapter("https://desu.uno/manga/op.12/vol1/ch1/rus")
+        assert not desu_parsing.is_robots_free_chapter("https://desu.uno/manga/op.12/vol1/ch2/rus")
+        assert not desu_parsing.is_robots_free_chapter("https://desu.uno/manga/op.12/ch1/rus")
+        assert not desu_parsing.is_robots_free_chapter("https://desu.uno/manga/op.12/vol1/ch1/")
+        assert not desu_parsing.is_robots_free_chapter(None)
+
+    def test_chapter_pages_need_reader_config(self) -> None:
+        session = FakeSession({
+            "/vol1/ch1/rus": FakeResponse(text="<html><body>нет ридера</body></html>"),
+        })
+        with pytest.raises(DesuError, match="Ридер"):
+            self.client(session).chapter_pages(
+                "one-piece.12", {"url": "https://desu.uno/manga/one-piece.12/vol1/ch1/rus"}
+            )
+
+    def test_chapter_pages_fail_when_chapter_is_empty(self) -> None:
+        session = FakeSession({
+            "/vol1/ch1/rus": FakeResponse(text=DESU_READER_HTML),
+            "/api/manga/12/chapters/189239": FakeResponse(payload={"chapter": {"pages": []}}),
+        })
+        with pytest.raises(DesuError, match="нет доступных страниц"):
+            self.client(session).chapter_pages(
+                "one-piece.12", {"url": "https://desu.uno/manga/one-piece.12/vol1/ch1/rus"}
+            )
+
+    def test_parsing_helpers(self) -> None:
+        assert desu_parsing.entry("https://desu.uno/") is None
+        assert desu_parsing.entry("https://desu.uno/manga/one-piece.12/")["id"] == 12
+        assert desu_parsing.title_from_slug("") == ""
+        assert desu_parsing.title_from_slug("a-thugs-pure-love") == "A Thugs Pure Love"
+        assert desu_parsing.title_from_slug("idm-ON") == "Idm ON"
+        assert desu_parsing.split_list("A, B , C") == ["A", "B", "C"]
+        assert desu_parsing.split_list(None) == []
+        assert desu_parsing.year("с 21 сен 1999 г. по 10 ноя 2014 г.") == 1999
+        assert desu_parsing.year("с 2026 г.") == 2026
+        assert desu_parsing.year("выходит") is None
+        # нулевой рейтинг у нового тайтла — это «нет оценки», а не ноль
+        assert desu_parsing.rating('<div class="b-rate rateable" data-score="0">') is None
+        assert desu_parsing.info_regions(DESU_ERROR_HTML) == {}
 SELFMANGA_LIST = """
 <html><body>
   <div class="list-page-content">
@@ -1292,7 +1518,7 @@ class TestSelfManga:
     def test_chapter_pages_join_origin_and_path(self) -> None:
         """Ридер для гостя берёт шестой элемент кортежа, если он непустой."""
         session = self.session()
-        pages = self.client(session).chapter_pages("djodjo__vpered_legenda_", 1, 1)
+        pages = self.client(session).chapter_pages("djodjo__vpered_legenda_", {"vol": 1, "num": 1})
         assert session.calls[0][0].endswith("/djodjo__vpered_legenda_/vol1/1")
         assert pages == [
             "https://sm.one-way.work/auto/09/40/88/01_res.jpg?t=1792007230&u=0&h=CBJS",
@@ -1300,14 +1526,19 @@ class TestSelfManga:
         ]
 
     def test_chapter_pages_accept_ready_url(self) -> None:
-        """Адрес из chapters() можно передать как есть, не разбирая обратно."""
+        """Адрес из chapters() принимается как есть, не разбирая его обратно."""
         session = self.session()
-        self.client(session).chapter_pages("https://1.selfmanga.live/djodjo__vpered_legenda_/vol1/1")
-        assert session.calls[0][0].endswith("/djodjo__vpered_legenda_/vol1/1")
+        chapters = self.client(session).chapters("djodjo__vpered_legenda_")
+        self.client(session).chapter_pages("djodjo__vpered_legenda_", chapters[0])
+        assert session.calls[-1][0] == chapters[0]["url"]
 
-        session = self.session()
-        self.client(session).chapter_pages("/djodjo__vpered_legenda_/vol1/1")
-        assert session.calls[0][0] == "https://1.selfmanga.live/djodjo__vpered_legenda_/vol1/1"
+        for key in (
+            "https://1.selfmanga.live/djodjo__vpered_legenda_/vol1/1",
+            "/djodjo__vpered_legenda_/vol1/1",
+        ):
+            session = self.session()
+            self.client(session).chapter_pages("djodjo__vpered_legenda_", {"url": key})
+            assert session.calls[0][0] == "https://1.selfmanga.live/djodjo__vpered_legenda_/vol1/1"
 
     def test_chapter_url_needs_vol_or_href(self) -> None:
         assert chapter_url("slug", 5, 20) == "https://1.selfmanga.live/slug/vol5/20"
@@ -1338,34 +1569,10 @@ class TestSelfManga:
 
         session = FakeSession({"/list": responder})
         client = self.client(session)
->>>>>>> 2461edd3c0b5f630b93f4f89d696b9a40970d7d5
 
         from mangaparser.infrastructure.storage import JsonlCheckpoint
 
         checkpoint = JsonlCheckpoint(tmp_path / "cp.jsonl")
-<<<<<<< HEAD
-        items = list(client.iter_catalog(count=2, checkpoint=checkpoint, on_page=lambda *_: None))
-        checkpoint.close()
-
-        assert [t.id for t in items] == [1, 12, 368]
-        rows = [line for line in (tmp_path / "cp.jsonl").read_text(encoding="utf-8").splitlines() if line]
-        assert json.loads(rows[1])["slug"] == "one-piece"
-
-    def test_parsing_helpers(self) -> None:
-        assert desu_parsing.entry("https://desu.uno/") is None
-        assert desu_parsing.entry("https://desu.uno/manga/one-piece.12/")["id"] == 12
-        assert desu_parsing.title_from_slug("") == ""
-        assert desu_parsing.title_from_slug("a-thugs-pure-love") == "A Thugs Pure Love"
-        assert desu_parsing.title_from_slug("idm-ON") == "Idm ON"
-        assert desu_parsing.split_list("A, B , C") == ["A", "B", "C"]
-        assert desu_parsing.split_list(None) == []
-        assert desu_parsing.year("с 21 сен 1999 г. по 10 ноя 2014 г.") == 1999
-        assert desu_parsing.year("с 2026 г.") == 2026
-        assert desu_parsing.year("выходит") is None
-        # нулевой рейтинг у нового тайтла — это «нет оценки», а не ноль
-        assert desu_parsing.rating('<div class="b-rate rateable" data-score="0">') is None
-        assert desu_parsing.info_regions(DESU_ERROR_HTML) == {}
-=======
         items = list(client.iter_catalog(checkpoint=checkpoint, on_page=lambda *_: None))
         checkpoint.close()
 
@@ -1420,4 +1627,17 @@ class TestSelfManga:
         assert again.genres == manga.genres
         assert again.people == manga.people
         assert again.stats == manga.stats
->>>>>>> 2461edd3c0b5f630b93f4f89d696b9a40970d7d5
+
+class TestSourceContract:
+    """Контракт одинаков у всех источников — иначе прикладной слой будет ветвиться."""
+
+    def test_every_source_implements_the_protocol(self) -> None:
+        for spec in REGISTRY.values():
+            client = spec.build()
+            assert isinstance(client, Source), spec.name
+
+    def test_every_source_takes_chapter_pages_the_same_way(self) -> None:
+        """Сигнатура `(key, chapter)` одинакова: адрес главы берётся из записи."""
+        for spec in REGISTRY.values():
+            params = spec.build().chapter_pages.__code__.co_varnames
+            assert params[:3] == ("self", "key", "chapter"), spec.name

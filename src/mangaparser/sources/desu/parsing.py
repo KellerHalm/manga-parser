@@ -29,6 +29,7 @@ HTML-разметке и микроразметке schema.org. Данные б�
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -282,6 +283,44 @@ def _absolute(url: str, site: str) -> str:
     if url.startswith("http"):
         return url
     return f"{site}/{url.lstrip('./')}"
+
+
+#: Первая глава тома — единственная страница главы, разрешённая robots.txt:
+#: `Disallow: /manga/*/vol*/ch*/` со смягчающим `Allow: /manga/*/vol*/ch1/rus`.
+#: Адрес главы всегда заканчивается языковым хвостом, а не просто `ch1`.
+ROBOTS_FREE_CHAPTER_RE = re.compile(r"/vol(?P<volume>[\d.]*)/ch1/rus/?$")
+
+
+def is_robots_free_chapter(url: str | None) -> bool:
+    """Разрешена ли страница главы правилами robots.txt сайта."""
+    return bool(url and ROBOTS_FREE_CHAPTER_RE.search(url))
+
+
+#: Конфигурация ридера: window.MangaReader = {…}
+_READER_STATE_RE = re.compile(r"window\.MangaReader\s*=\s*(\{.*?\});", re.S)
+
+
+def reader_state(page: str) -> dict[str, Any]:
+    """Конфигурация ридера из страницы главы (JSON-объект `window.MangaReader`)."""
+    match = _READER_STATE_RE.search(page or "")
+    if not match:
+        return {}
+    try:
+        state = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def chapter_page_urls(chapter: dict[str, Any]) -> list[str]:
+    """Адреса картинок главы из ответа `/api/manga/<id>/chapters/<id>`."""
+    pages = chapter.get("pages")
+    out: list[str] = []
+    for page in pages or []:
+        url = page.get("url") if isinstance(page, dict) else page
+        if url:
+            out.append(str(url))
+    return out
 
 
 def genres(page: str) -> tuple[list[str], list[str]]:

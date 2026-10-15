@@ -68,7 +68,20 @@ def cmd_details(args: argparse.Namespace, report: Reporter) -> int:
 def cmd_chapters(args: argparse.Namespace, report: Reporter) -> int:
     for client in _clients(args.source):
         key = browse.resolve_key(client, args.key, reporter=report)
-        browse.chapters(client, key, limit=args.limit, reporter=report)
+        browse.chapters(
+            client, key, limit=args.limit, with_pages=args.pages, reporter=report,
+        )
+    return 0
+
+
+def cmd_pages(args: argparse.Namespace, report: Reporter) -> int:
+    """Адреса картинок главы — по номеру главы в списке или по её адресу."""
+    for client in _clients(args.source):
+        key = browse.resolve_key(client, args.key, reporter=report)
+        chapter = {"url": args.chapter_url} if args.chapter_url else None
+        browse.chapter_pages(
+            client, key, chapter=chapter, index=args.index, limit=args.limit, reporter=report,
+        )
     return 0
 
 
@@ -183,13 +196,42 @@ def _add_dump(p: argparse.ArgumentParser) -> None:
     p.add_argument("--sort", default=None, help="сортировка источника")
 
 
+def _add_chapters(p: argparse.ArgumentParser) -> None:
+    _add_key(p, "slug/dir")
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument(
+        "--pages",
+        action="store_true",
+        help="дозагрузить число страниц каждой главы (запрос на главу)",
+    )
+
+
+def _add_pages(p: argparse.ArgumentParser) -> None:
+    _add_key(p, "slug/dir")
+    p.add_argument(
+        "--chapter",
+        dest="index",
+        type=int,
+        default=0,
+        help="номер главы в списке, с нуля (по умолчанию первая)",
+    )
+    p.add_argument(
+        "--url",
+        dest="chapter_url",
+        default=None,
+        help="адрес главы напрямую (когда список глав недоступен)",
+    )
+    p.add_argument("--limit", type=int, default=0, help="сколько адресов показать (0 — все)")
+
+
 #: (имя команды, справка, обработчик, builder) — команды добавляются в цикле.
 COMMANDS: list[tuple[str, str, Handler, Callable[[argparse.ArgumentParser], None]]] = [
     ("search", "поиск по названию (серверный)", cmd_search, _add_search),
     ("catalog", "одна страница каталога", cmd_catalog, _add_catalog),
     ("latest", "лента новинок (remanga)", cmd_latest, _add_catalog),
     ("details", "карточка тайтла", cmd_details, lambda p: _add_key(p, "slug/dir")),
-    ("chapters", "список глав", cmd_chapters, lambda p: (_add_key(p, "slug/dir"), p.add_argument("--limit", type=int, default=20))),
+    ("chapters", "список глав", cmd_chapters, _add_chapters),
+    ("pages", "адреса страниц главы", cmd_pages, _add_pages),
     ("dump", "выгрузить весь каталог (с чекпоинтом)", cmd_dump, _add_dump),
     ("build", "собрать JSON/CSV из чекпоинта, без сети", cmd_build, lambda p: (
         p.add_argument("--out", default=None),
@@ -243,11 +285,7 @@ def split_source(argv: Sequence[str]) -> tuple[str | None, list[str]]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="main.py",
-<<<<<<< HEAD
-        description="Парсеры каталогов манги (MangaLIB, ReManga, InkStory, BuZuManga, Com-X, Desu.Me)",
-=======
-        description="Парсеры каталогов манги (MangaLIB, ReManga, InkStory, BuZuManga, Com-X, SelfManga)",
->>>>>>> 2461edd3c0b5f630b93f4f89d696b9a40970d7d5
+        description="Парсеры каталогов манги (MangaLIB, ReManga, InkStory, BuZuManga, Com-X, Desu.Me, SelfManga)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Формат:  python main.py <источник> <команда> [аргументы]\n\n"

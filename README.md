@@ -1,11 +1,7 @@
 # manga-parser
 
 Парсеры каталогов манги: **MangaLIB**, **ReManga**, **InkStory**, **BuZuManga**,
-<<<<<<< HEAD
-**Com-X**, **Desu.Me**. Один вход, одинаковые команды для всех источников,
-=======
-**Com-X**, **SelfManga**. Один вход, одинаковые команды для всех источников,
->>>>>>> 2461edd3c0b5f630b93f4f89d696b9a40970d7d5
+**Com-X**, **Desu.Me**, **SelfManga**. Один вход, одинаковые команды для всех источников,
 чистая архитектура — новый сайт подключается без правок логики и CLI.
 
 ## Быстрый старт
@@ -35,7 +31,8 @@ python main.py all      search "наруто"           # по всем исто
 | `catalog`   | одна страница каталога (`--page`, `--sort`, `--count`) |
 | `latest`    | лента новинок (remanga)                                |
 | `details`   | карточка тайтла (slug подставляется автоматически)     |
-| `chapters`  | список глав                                            |
+| `chapters`  | список глав (`--pages` — ещё и число страниц)         |
+| `pages`     | адреса картинок главы (страниц)                        |
 | `dump`      | полный обход каталога в JSON + CSV + JSONL             |
 | `enrich`    | дозагрузить полные карточки: описание, жанры, авторы   |
 | `build`     | собрать JSON/CSV из чекпоинта, без единого запроса     |
@@ -56,6 +53,35 @@ python main.py index --catalog data/remanga_catalog.json --reset
 python main.py offline "берсерк"
 python main.py merge data/remanga_catalog.json data/inkstory_catalog.json
 ```
+
+## Страницы глав
+
+У каждого источника есть `chapter_pages(key, chapter)` — адреса картинок главы.
+Сигнатура общая, поэтому прикладной слой и CLI не знают, что у MangaLIB глава
+адресуется по `id`, а у SelfManga — по адресу страницы: `chapter` берётся из
+`chapters()` и уже знает всё нужное.
+
+```bash
+python main.py inkstory pages one-piece --chapter 0        # первая глава
+python main.py remanga  pages berserk_of_gluttony_         # страницы бесплатно
+python main.py buzumanga pages 2634 --limit 5              # первые пять адресов
+python main.py desu     pages 12 --url https://desu.uno/manga/one-piece.12/vol1/ch1/rus
+python main.py inkstory chapters one-piece --pages          # число страниц у каждой главы
+```
+
+| Источник     | как достаются страницы                                | ограничения |
+|--------------|-------------------------------------------------------|-------------|
+| **ReManga**  | список картинок уже лежит в главе (`content`)          | сети нет, работает мгновенно |
+| **MangaLIB** | `/api/manga/{slug}/chapter/{id}`                       | адрес главы — её `id` |
+| **BuZuManga**| `/api/manga/{id}/chapters/{номер}/pages`               | относительные пути дописываются CDN-префиксом |
+| **SelfManga**| ридер `/<slug>/volV/N` -> `rm_h.readerInit(...)`        | главы 18+ и неопубликованные гостю отдаются без картинок |
+| **InkStory** | ридер `/content/<slug>/<uuid>` -> SSR-payload `pages`   | сервер отдаёт только первую страницу списка глав (41 шт.) |
+| **Desu.Me**  | ридер -> `/api/manga/{id}/chapters/{id}`                | **только первая глава тома** (`volN/ch1/rus`) — остальные закрыты `robots.txt` |
+| **Com-X**    | —                                                      | антибот-челлендж: поднимает ошибку, а не возвращает пустоту |
+
+Колонка со страницами в `chapters` заполняется тем, что глава знает о себе
+(`page_count` у BuZuManga, список страниц у ReManga); остальным нужно по
+запросу на главу — это и делает флаг `--pages`.
 
 ## Полные данные тайтла: `dump` и `enrich`
 
@@ -84,11 +110,8 @@ python main.py remanga enrich --limit 0 --csv      # 2: дозагрузка к�
 | **ReManga**  | да       | да + рубрики `categories` | да                  | да (`authors` / `publishers`)          | возрастное ограничение, заметка, обои, наличие аниме     |
 | **InkStory** | да       | да                       | да + число голосов   | автор, художник, издатели, переводчики, журнал | страна, статус, год, главы, просмотры, лайки, другие названия |
 | **BuZuManga** | да      | да (`tags`)              | да + число голосов   | —                                      | закладки, дата оригинала, типы, возрастной рейтинг     |
-<<<<<<< HEAD
 | **Desu.Me**  | да       | да + рубрики `tags`      | да + число голосов   | авторы, переводчики                    | год, статус оригинала и перевода, просмотры, направление чтения, другие названия |
-=======
 | **SelfManga**| да       | да + метки (`tags`)      | да + 3 оценки по категориям | автор, художник, сценарист (`people`) | статус выпуска, томов, частота выхода, год, тип, возрастной рейтинг, фоны, статистика читателей |
->>>>>>> 2461edd3c0b5f630b93f4f89d696b9a40970d7d5
 | **MangaLIB** | —        | —                        | только из каталога   | —                                      | сайт не отдаёт это в API                                |
 | **Com-X**    | —        | —                        | —                    | —                                      | только sitemap: id, url, название, `lastmod`            |
 
@@ -98,6 +121,26 @@ python main.py remanga enrich --limit 0 --csv      # 2: дозагрузка к�
 `api2`/`api.cdnlibs.org` и по бандлу фронтенда, где других адресов нет. Поэтому
 источник помечен `enrichable = False`, чтобы `enrich` не делал тысячи запросов
 впустую.
+
+### InkStory: особенности сайта
+
+Каталог и карточка рендерятся на сервере, а главы живут на отдельной вкладке
+`/content/<slug>/chapters`, и адресуются **uuid**, а не номером:
+
+| Что            | Откуда                                                     |
+|----------------|------------------------------------------------------------|
+| главы          | `/content/<slug>/chapters`, в `aria-label` — «Глава N: …» |
+| страницы главы | `/content/<slug>/<uuid>` -> SSR-payload `initialChapter`   |
+
+Два ограничения сайта, из-за которых возможности скромнее, чем кажется:
+
+- **список глав неполный.** Сервер отдаёт только первую виртуальную страницу —
+  41 глава из 1217 у One Piece. Остальное догружает клиент через `/api`, а он
+  закрыт в `robots.txt`, поэтому `?page=N` возвращает ту же первую страницу и
+  обойти запрет, не нарушив его, нельзя;
+- **страницы главы лежат в payload ридера**, а не в отдельном API. В том же
+  payload лежат данные соседних глав, поэтому берутся только страницы той главы,
+  чей `uuid` указан в `initialChapter`.
 
 ### Устойчивость к обрывам
 
@@ -152,9 +195,12 @@ com-x.life (DLE) закрыт антибот-защитой: корень, ка�
 | всего     | 28 292 адреса, 3 сетевых запроса |
 
 Из sitemap доступны только `id`, `url`, название из slug и `lastmod`. Поэтому
-`chapters()` возвращает пусто, а `search()` ищет локально по скачанным
-sitemap (серверный `/search/` запрещён в `robots.txt` и закрыт челленджем).
-Весь обход — 3 запроса и ~3 с:
+`chapters()` возвращает пусто, а `chapter_pages()` поднимает ошибку с
+объяснением: пустой список выглядел бы как «глава без картинок», а на деле
+список глав лежит за антибот-челленджем и недоступен без браузера с
+JavaScript. `search()` ищет локально по скачанным sitemap (серверный
+`/search/` запрещён в `robots.txt` и закрыт челленджем). Весь обход — 3 запроса
+и ~3 с:
 
 ```bash
 python main.py comx dump --csv
@@ -162,7 +208,6 @@ python main.py comx search "schenok"
 python main.py comx details 34100
 ```
 
-<<<<<<< HEAD
 ### Desu.Me: особенности сайта
 
 desu.uno (XenForo) отдаёт всё нужное в разметке, но `robots.txt` закрывает три
@@ -175,6 +220,7 @@ desu.uno (XenForo) отдаёт всё нужное в разметке, но `r
 | каталог         | `/sitemap.php` — 7 056 карточек, 1 запрос |
 | карточка        | `/manga/<slug>.<id>/` — открыта            |
 | список глав     | целиком лежит на карточке, без пагинации   |
+| страницы главы  | `/manga/<slug>.<id>/volN/ch1/rus` — единственная разрешённая |
 
 Поэтому `catalog()` — это срез уже скачанного sitemap (весь каталог стоит один
 сетевой запрос), а `search()` ищет локально: в sitemap лежит название из slug,
@@ -188,14 +234,21 @@ python main.py desu search "one piece"          # по оригинальном�
 python main.py desu details 12                  # id подставится сам
 python main.py desu chapters 12
 python main.py desu enrich --limit 0 --csv      # полные карточки всего каталога
+python main.py desu pages 12 --url https://desu.uno/manga/one-piece.12/vol1/ch1/rus
 ```
+
+Страницы глав у desu.uno закрыты `robots.txt` (`Disallow: /manga/*/vol*/ch*/`)
+с единственным исключением — `Allow: /manga/*/vol*/ch1/rus`. Поэтому
+`chapter_pages()` работает только для первой главы тома, а для любой другой
+поднимает ошибку вместо того, чтобы обходить запрет. Сам список картинок лежит
+не в разметке, а в ответе `/api/manga/{id}/chapters/{id}` — эндпоинт в
+`robots.txt` не закрыт.
 
 Часть тайтлов в sitemap отдаёт 451 («закрыто по требованию правообладателя»)
 или 401 — это норма, а не сбой: такие записи `enrich` пропускает и идёт дальше
 (ради этого `Http` поднимает `SourceError` на любой код ответа >= 400, а не
 только на 404/422 — иначе сырое исключение обрывало бы весь обход).
 
-=======
 ### SelfManga: особенности сайта
 
 1.selfmanga.live — русский сайт авторской манги (личные тайтлы, додзинси,
@@ -248,7 +301,6 @@ python main.py selfmanga enrich --limit 0 --csv       # + статусы, пер
 python main.py selfmanga chapters djodjo__vpered_legenda_
 ```
 
->>>>>>> 2461edd3c0b5f630b93f4f89d696b9a40970d7d5
 ## Архитектура
 
 Зависимости идут строго сверху вниз, обратных импортов нет.
@@ -265,23 +317,16 @@ src/mangaparser/
 │   ├── inkstory/             client.py + модель Book + parsing.py (разбор HTML)
 │   ├── buzumanga/            client.py + модель Manga + slug.py (транслитерация)
 │   ├── comx/                 client.py + модель Title + parsing.py (sitemap)
-<<<<<<< HEAD
-│   └── desu/                 client.py + модель Title + parsing.py (sitemap + карточка)
-=======
-│   └── selfmanga/            client.py + модель Manga + parsing.py (SSR-разметка)
->>>>>>> 2461edd3c0b5f630b93f4f89d696b9a40970d7d5
+│   ├── desu/                  client.py + модель Title + parsing.py (sitemap + карточка)
+│   └── selfmanga/             client.py + модель Manga + parsing.py (SSR-разметка)
 ├── infrastructure/
 │   └── storage/              exporters.py, checkpoint.py, sqlite_index.py
 └── core/                     контракты и утилиты, внешних зависимостей нет
     ├── ports.py              протоколы Source / Checkpoint / OfflineIndex
-    ├── models.py             Item, Chapter, merge_details, extract_pages
+    ├── models.py             Item, Chapter, chapter_field, extract_pages
     ├── http.py               сессия с ретраями, Http, Throttle
     └── text.py               strip_tags, to_float, to_int, to_compact_int, label, dedupe
-<<<<<<< HEAD
-tests/                        148 тестов без обращения к сети
-=======
-tests/                        157 тестов без обращения к сети
->>>>>>> 2461edd3c0b5f630b93f4f89d696b9a40970d7d5
+tests/                        200 тестов без обращения к сети
 data/                         выгрузки (git-ignored)
 ```
 
@@ -313,6 +358,7 @@ class MyClient:
     def search(self, query: str, page: int = 1, **kw) -> list[MyBook]: ...
     def details(self, key: str, **kw) -> MyBook: ...   # карточка: описание, жанры, авторы
     def chapters(self, key: str, **kw) -> list[dict]: ...
+    def chapter_pages(self, key: str, chapter: dict, **kw) -> list[str]: ...
     def iter_catalog(self, *, delay, max_pages=None, checkpoint=None, on_page=None, **kw): ...
 ```
 

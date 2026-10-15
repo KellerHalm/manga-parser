@@ -118,19 +118,63 @@ class Chapter:
         return {"id": self.id, "number": self.number, "title": self.title, "url": self.url, **self.extra}
 
 
+#: Ключи, под которыми адрес картинки лежит в записи страницы главы.
+_PAGE_KEYS = ("url", "image", "link", "src")
+
+
+def chapter_field(chapter: Any, name: str, default: Any = None) -> Any:
+    """
+    Значение поля записи главы.
+
+    Главы приходят словарями (сырой ответ API) или объектами источника —
+    разбор страниц должен работать с обоими, поэтому чтение поля собрано
+    здесь, а не в каждом источнике отдельно.
+    """
+    if isinstance(chapter, dict):
+        return chapter.get(name, default)
+    return getattr(chapter, name, default)
+
+
+def _page_url(item: Any) -> str | None:
+    """Адрес картинки из элемента списка страниц: строка или объект."""
+    if isinstance(item, str):
+        return item or None
+    if isinstance(item, dict):
+        for key in _PAGE_KEYS:
+            if value := item.get(key):
+                return str(value)
+    return None
+
+
 def extract_pages(chapter: Any) -> list[str]:
     """
-    URL страниц главы из ответа API.
+    URL страниц главы из записи главы — в любом виде, в каком их отдаёт сайт.
 
-    Внутри главы лежит двухуровневый список: каждая «страница» — список
-    вариантов картинки ({id, link, height, width}), поэтому структура
-    вложенная; некоторые источники отдают сразу объекты.
+    Источники различаются структурой, поэтому разбираются все известные:
+
+        pages   — плоский список: строки или объекты {url, image, link, src};
+        content — двухуровневый список ReManga: каждая «страница» — список
+                  вариантов картинки ({id, link, height, width}).
+
+    Пустой результат — не ошибка: список страниц есть не у каждой главы.
     """
     pages: list[str] = []
-    content = chapter.get("content") if isinstance(chapter, dict) else getattr(chapter, "content", None)
-    for group in content or []:
+
+    for group in _items(chapter_field(chapter, "pages")):
+        url = _page_url(group)
+        if url:
+            pages.append(url)
+
+    for group in _items(chapter_field(chapter, "content")):
         if isinstance(group, list):
-            pages.extend(item["link"] for item in group if isinstance(item, dict) and item.get("link"))
-        elif isinstance(group, dict) and group.get("link"):
-            pages.append(group["link"])
+            pages.extend(url for url in map(_page_url, group) if url)
+        else:
+            url = _page_url(group)
+            if url:
+                pages.append(url)
     return pages
+
+
+def _items(value: Any) -> list[Any]:
+    """Список страниц, если он список: число страниц вместо адресов — не список."""
+    return list(value) if isinstance(value, (list, tuple)) else []

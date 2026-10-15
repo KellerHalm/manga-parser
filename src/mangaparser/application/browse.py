@@ -10,7 +10,7 @@ import time
 from typing import Any
 
 from ..core.http import SourceError
-from ..core.models import extract_pages
+from ..core.models import chapter_field, extract_pages
 from ..core.ports import Source
 from .report import Reporter
 
@@ -100,14 +100,73 @@ def details(source: Source, key: str, *, reporter: Reporter | None = None) -> An
     return item
 
 
-def chapters(source: Source, key: str, *, limit: int = 20, reporter: Reporter | None = None) -> list[Any]:
-    """Список глав."""
+def chapters(
+    source: Source,
+    key: str,
+    *,
+    limit: int = 20,
+    with_pages: bool = False,
+    reporter: Reporter | None = None,
+) -> list[Any]:
+    """
+    Список глав.
+
+    `with_pages` добавляет каждой главе число страниц: у части источников оно
+    приходит в самой записи (`page_count`), остальным приходится делать запрос
+    на каждую главу, поэтому по умолчанию выключено.
+    """
     report = reporter or Reporter()
-    items = source.chapters(key)
+    items = list(source.chapters(key))
+    for chapter in items[:limit] if with_pages else []:
+        chapter["pages_count"] = len(source.chapter_pages(key, chapter))
+
     report.result(f"Глав: {len(items)} [{source.name}]\n")
     for chapter in items[:limit]:
         report.result(format_chapter(chapter))
     return items
+
+
+def chapter_pages(
+    source: Source,
+    key: str,
+    *,
+    chapter: Any = None,
+    index: int = 0,
+    limit: int = 0,
+    reporter: Reporter | None = None,
+) -> list[str]:
+    """
+    Адреса страниц одной главы.
+
+    Глава выбирается по записи из `chapters()`: `chapter` — если он уже есть,
+    иначе по `index` в том списке. Список глав при этом не перечитывается,
+    если `chapter` передан явно.
+    """
+    report = reporter or Reporter()
+    record = chapter
+    if record is None:
+        items = source.chapters(key)
+        if not items:
+            raise SourceError(f"У тайтла нет глав: {key}")
+        if not 0 <= index < len(items):
+            raise SourceError(f"Главы с номером {index} нет: всего {len(items)}")
+        record = items[index]
+
+    pages = source.chapter_pages(key, record)
+    report.result(f"Страниц главы {_chapter_label(record, index)} [{source.name}]: {len(pages)}\n")
+    for number, url in enumerate(pages[:limit] if limit else pages, 1):
+        report.result(f"  {number:>4}  {url}")
+    return pages
+
+
+def _chapter_label(chapter: Any, index: int) -> str:
+    """Чем назвать главу в шапке: номером, названием или адресом."""
+    return str(
+        chapter_field(chapter, "number")
+        or chapter_field(chapter, "title")
+        or chapter_field(chapter, "url")
+        or index
+    )
 
 
 def catalog_page(
@@ -133,7 +192,7 @@ def catalog_page(
 
 
 def _get(item: Any, name: str, default: Any = None) -> Any:
-    return item.get(name, default) if isinstance(item, dict) else getattr(item, name, default)
+    return chapter_field(item, name, default)
 
 
 def format_row(item: Any) -> str:
@@ -170,17 +229,30 @@ def format_details(item: Any) -> str:
 
 
 def format_chapter(chapter: Any) -> str:
-    if isinstance(chapter, dict):
-        number = chapter.get("number")
-        title = chapter.get("title") or chapter.get("name") or chapter.get("label") or ""
-        url = chapter.get("url") or ""
-        cid = chapter.get("id")
-    else:
-        number = _get(chapter, "number")
-        title = _get(chapter, "title")
-        url = _get(chapter, "url") or ""
-        cid = _get(chapter, "id")
+    """Строка главы: id, номер, название, число страниц и адрес."""
+    number = _get(chapter, "number")
+    title = _get(chapter, "title") or _get(chapter, "label") or ""
+    url = _get(chapter, "url") or ""
+    cid = _get(chapter, "id")
     number_text = f"{number}" if number is not None else "—"
-    pages = extract_pages(chapter)
-    pages_text = f"стр.{len(pages):<4}" if pages else ""
+    pages_text = _pages_text(chapter)
     return f"  {str(cid or ''):>10}  {number_text:>8}  {str(title)[:40]:40} {pages_text:9} {str(url)[:50]}"
+
+
+def _pages_text(chapter: Any) -> str:
+    """
+    Число страниц главы, если оно известно без сетевого запроса.
+
+    Источники отдают его по-разному: BuZuManga кладёт готовый `page_count`,
+    ReManga и MangaLIB — сам список страниц в записи главы, `chapters --pages`
+    дописывает `pages_count`. Где числа нет, колонка остаётся пустой, а не врёт.
+    """
+    pages = extract_pages(chapter)
+    if pages:
+        return f"стр.{len(pages):<4}"
+    count = (
+        _get(chapter, "page_count")
+        or _get(chapter, "pages_count")
+        or _get(chapter, "pages")
+    )
+    return f"стр.{count:<4}" if isinstance(count, int) else ""

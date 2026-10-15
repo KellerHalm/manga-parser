@@ -26,6 +26,7 @@ from typing import Any
 
 from ...core.http import Http, SourceError, Throttle, build_session
 from ...core.models import Item
+from ...core.models import chapter_field as _get
 from ...core.ports import Checkpoint
 from ...core.text import label, to_float, to_int
 
@@ -162,10 +163,19 @@ class MangaLibClient:
     def chapters(self, slug: str) -> list[dict[str, Any]]:
         return self._rows(self._get(f"{API}/api/manga/{slug}/chapters"))
 
-    def chapter_pages(self, slug: str, chapter_id: int) -> list[str]:
-        """URL страниц главы (для загрузки изображений)."""
+    def chapter_pages(self, key: str, chapter: Any, **_: Any) -> list[str]:
+        """
+        URL страниц главы (для загрузки изображений).
+
+        Страница главы адресуется id главы, а не её номером: у MangaLIB
+        `/api/manga/<slug>/chapter/<id>` и именно id лежит в записи главы.
+        """
+        slug = str(_get(chapter, "slug") or key).strip("/")
+        ident = _get(chapter, "id")
+        if ident is None:
+            raise MangaLibError(f"У главы нет id — страницы недоступны: {chapter!r}")
         pages: list[str] = []
-        for row in self._rows(self._get(f"{API}/api/manga/{slug}/chapter/{chapter_id}")):
+        for row in self._rows(self._get(f"{API}/api/manga/{slug}/chapter/{int(ident)}")):
             img = row.get("img") or row.get("image") or {}
             url = (img.get("default") or img.get("original")) if isinstance(img, dict) else img
             if url:

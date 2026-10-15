@@ -31,6 +31,7 @@ from typing import Any
 
 from ...core.http import Http, SourceError, Throttle, build_session
 from ...core.models import Item
+from ...core.models import chapter_field as _get
 from ...core.ports import Checkpoint
 from ...core.text import to_float, to_int
 from . import slug
@@ -258,17 +259,24 @@ class BuZuMangaClient:
         rows = payload.get("chapters") if isinstance(payload, dict) else None
         return [self._chapter(r, ident) for r in rows or []]
 
-    def chapter_pages(self, key: str, number: float | int) -> list[str]:
+    def chapter_pages(self, key: str, chapter: Any, **_: Any) -> list[str]:
         """
         Пути картинок главы (для загрузки изображений).
 
         Страницы адресуются номером главы, а не её id: у одного номера бывает
-        несколько переводов, и эндпоинт отдаёт одну из версий.
+        несколько переводов, и эндпоинт отдаёт одну из версий. Номер берётся
+        из записи главы, поэтому её можно передать из `chapters()` как есть.
+
+        API отдаёт пути относительные — абсолютные адреса лежат на отдельном
+        CDN, и без префикса `image_url` скачать картинку нельзя.
         """
+        number = _get(chapter, "number")
+        if number is None:
+            raise BuZuMangaError(f"У главы нет номера — страницы недоступны: {chapter!r}")
         ident = manga_id(key)
         data = self._get(f"{CATALOG_URL}/{ident}/chapters/{number}/pages")
         pages = data.get("pages") if isinstance(data, dict) else None
-        return [p for p in pages or [] if p]
+        return [image_url(page) for page in pages or [] if page]
 
     def stats(self) -> int:
         """Всего тайтлов в базе — нужно, чтобы знать размер обхода."""

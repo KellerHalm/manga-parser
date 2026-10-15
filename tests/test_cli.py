@@ -12,11 +12,7 @@ from mangaparser.sources import REGISTRY, names, resolve, resolve_many
 
 class TestRegistry:
     def test_all_sources_registered(self) -> None:
-<<<<<<< HEAD
-        assert names() == ["mangalib", "remanga", "inkstory", "buzumanga", "comx", "desu"]
-=======
-        assert names() == ["mangalib", "remanga", "inkstory", "buzumanga", "comx", "selfmanga"]
->>>>>>> 2461edd3c0b5f630b93f4f89d696b9a40970d7d5
+        assert names() == ["mangalib", "remanga", "inkstory", "buzumanga", "comx", "desu", "selfmanga"]
 
     def test_resolve_unknown(self) -> None:
         with pytest.raises(KeyError):
@@ -70,6 +66,27 @@ class TestParser:
         args = build_parser().parse_args(["index", "--out", str(tmp_path / "i.db"), "--reset"])
         assert args.reset is True
         assert args.catalog == []
+
+    def test_chapters_defaults(self) -> None:
+        args = build_parser().parse_args(split_source(["desu", "chapters", "12"])[1])
+        assert args.key == "12"
+        assert args.limit == 20
+        assert args.pages is False
+
+    def test_pages_selects_chapter_by_index_or_url(self) -> None:
+        args = build_parser().parse_args(split_source(["inkstory", "pages", "one-piece"])[1])
+        assert args.key == "one-piece"
+        assert args.index == 0 and args.chapter_url is None and args.limit == 0
+
+        args = build_parser().parse_args(
+            split_source(["inkstory", "pages", "one-piece", "--chapter", "7", "--limit", "5"])[1]
+        )
+        assert args.index == 7 and args.limit == 5
+
+        args = build_parser().parse_args(
+            split_source(["desu", "pages", "12", "--url", "https://desu.uno/x/vol1/ch1/rus"])[1]
+        )
+        assert args.chapter_url == "https://desu.uno/x/vol1/ch1/rus"
 
     def test_missing_command(self) -> None:
         with pytest.raises(SystemExit):

@@ -11,7 +11,10 @@ supported here»), каталог рендерится на сервере, а �
        переводчики, журнал и другие названия;
     3. блок характеристик — год, страна, статус, число глав.
 
-Разбор вынесен отдельно от HTTP-клиента, поэтому логику можно покрыть
+Списки глав и страниц глав разбираются отдельно: главы лежат на вкладке
+`/content/<slug>/chapters`, а страницы — в SSR-payload ридера.
+
+Разбор вынесен отдельно от HTTP-клиента, чтобы логику можно покрыть
 тестами на фикстурах без сети.
 """
 
@@ -21,7 +24,7 @@ import json
 import re
 from typing import Any
 
-from ...core.text import page_text, strip_tags, to_compact_int, to_int
+from ...core.text import page_text, strip_tags, to_compact_int, to_float, to_int
 
 #: Границы блока «Метка : значение» в тексте карточки.
 _STOP_LABELS = r"(?:Художник|Переводчик|Издатель|Редактор|Другие|Год|Страна|Статус|Жанр|Глав|Метки|\||$)"
@@ -41,6 +44,28 @@ _STAT_FIELD_RE = re.compile(
     r"<(?:p|a)[^>]*>(?P<value>.*?)</(?:p|a)>",
     re.S,
 )
+
+#: Глава на вкладке «Главы»: ссылка-обложка несёт читаемое название главы,
+#: адрес главы — uuid: /content/<slug>/<uuid>
+_CHAPTER_LINK_RE = re.compile(
+    r'<a aria-label="(?P<label>[^"]*)"\s+href="(?P<href>/content/[^"/]+/[0-9a-f-]{36})"',
+    re.I,
+)
+_LABEL_NUMBER_RE = re.compile(r"Глава\s+(?P<number>[\d.]+)")
+_LABEL_TITLE_RE = re.compile(r"^Глава\s+[\d.]+\s*:?\s*")
+#: Том главы — моноширинный бейдж рядом с названием: <span …>108</span>
+_VOLUME_RE = re.compile(r'font-mono[^"]*"[^>]*>\s*(\d+)\s*</span>', re.S)
+_DATE_RE = re.compile(r"(\d{2}\.\d{2}\.\d{4})")
+
+#: Ридер отдаётся сервером: в payload есть объект открытой главы со списком
+#: страниц. `initialChapter` идёт последним в payload страницы, поэтому
+#: разбор начинается с него, а не с начала документа.
+_INITIAL_CHAPTER_RE = re.compile(r"initialChapter:\$R\[\d+\]=\{")
+_CHAPTER_ID_RE = re.compile(r'id:"(?P<id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"')
+_PAGE_IMAGE_RE = re.compile(r'image:"(https://static\.inuko\.me/chapters/[^"]+)"')
+
+#: Сколько разметки после ссылки главы просматривается в поисках тома и даты.
+_CARD_TAIL = 1200
 
 
 def jsonld_nodes(page: str) -> list[dict[str, Any]]:
@@ -118,21 +143,70 @@ def after_label(text: str, label_: str, limit: int = 60) -> str | None:
 
 
 def chapters_from_page(page: str, site: str) -> list[dict[str, Any]]:
-    """Главы лежат в разметке страницы книги (ссылки на /content/.../chapter/...)."""
+    """
+    Главы тайтла — лежат в разметке вкладки «Главы».
+
+    Адрес главы — `/content/<slug>/<uuid>`, без номера в пути: идентификатор
+    главы на сайте uuid, а читаемый номер с названием лежит в `aria-label`
+    ссылки. Том и дата главы идут следом в тексте карточки главы.
+
+    Сервер отдаёт только первую виртуальную страницу списка (41 глава при
+    1217 у One Piece): остальное догружает клиент через `/api`, а он закрыт
+    в `robots.txt`, поэтому `?page=` и не помогает — подгрузки нет и быть
+    не может без обхода запрета.
+    """
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for match in re.finditer(r'href="(/content/[^"]*?/chapter/[^"]+)"', page):
-        href = match.group(1)
+    for match in _CHAPTER_LINK_RE.finditer(page or ""):
+        href, label = match.group("href"), strip_tags(match.group("label"))
         if href in seen:
             continue
         seen.add(href)
-        label_text = strip_tags(page[match.start(): match.start() + 400])
-        number = re.search(r"([\d.]+)", label_text)
+
+        tail = page[match.end(): match.end() + _CARD_TAIL]
+        volume = _VOLUME_RE.search(tail)
+        date = _DATE_RE.search(tail)
+        number = _LABEL_NUMBER_RE.match(label)
         out.append({
-            "url": site + href,
-            "number": float(number.group(1)) if number else None,
-            "label": label_text[:80],
+            "id": href.rsplit("/", 1)[-1],
+            "number": to_float(number.group("number")) if number else None,
+            "title": _LABEL_TITLE_RE.sub("", label).strip() or None,
+            "label": label or None,
+            "volume": to_int(volume.group(1)) if volume else None,
+            "date": date.group(1) if date else None,
+            "url": f"{site}{href}",
         })
+    return out
+
+
+def reader_pages(page: str) -> list[str]:
+    """
+    Адреса картинок главы из SSR-payload ридера.
+
+    Разметка ридера отдаётся сервером целиком, и в ней лежит объект
+    `initialChapter` со списком `pages` — у каждой страницы свой `image`.
+    Адрес главы в адресе картинки, поэтому берутся только страницы этой главы:
+    у соседних глав в payload свои префиксы, и без фильтра они бы попали в выдачу.
+
+    Порядок страниц совпадает с порядком `index` в payload — он идёт по возрастанию.
+    """
+    start = _INITIAL_CHAPTER_RE.search(page or "")
+    if not start:
+        return []
+    chapter_id = _CHAPTER_ID_RE.search(page, start.start())
+    if not chapter_id:
+        return []
+    return _dedupe(_PAGE_IMAGE_RE.findall(page, chapter_id.end()))
+
+
+def _dedupe(urls: list[str]) -> list[str]:
+    """Уникальные адреса с сохранением порядка: превью повторяет картинку."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            out.append(url)
     return out
 
 

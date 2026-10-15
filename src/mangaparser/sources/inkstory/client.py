@@ -6,6 +6,9 @@
        жанры, описание; это основной и самый надёжный путь;
     2. видимый текст карточки — дополнительные поля (автор, год, главы, статусы).
 
+Списки глав и страниц глав приходят в том же SSR-ответе, поэтому отдельного
+API источник не использует вовсе.
+
 Пагинация: /content?page=N (с 1), 40 книг на страницу.
 Поиск:     /content?search=<query> — тот же эндпоинт, что в SearchAction разметки.
 Сортировка: ?sort=createdAt | viewsCount | ...
@@ -18,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ...core.http import Http, SourceError, Throttle, build_session
-from ...core.models import Item
+from ...core.models import Item, chapter_field
 from ...core.ports import Checkpoint
 from ...core.text import strip_tags, to_float, to_int
 from . import parsing
@@ -26,6 +29,8 @@ from . import parsing
 SITE = "https://inkstory.net"
 CATALOG_URL = f"{SITE}/content"
 BOOK_URL = f"{SITE}/content/{{slug}}"
+CHAPTERS_URL = f"{SITE}/content/{{slug}}/chapters"
+CHAPTER_URL = f"{SITE}/content/{{slug}}/{{id}}"
 PER_PAGE = 40
 TOTAL_PAGES = 537  # из пагинации каталога
 DEFAULT_DELAY = 0.7
@@ -155,7 +160,29 @@ class InkStoryClient:
         return parsing.apply_details_fields(book, page)
 
     def chapters(self, slug: str) -> list[dict[str, Any]]:
-        return parsing.chapters_from_page(self._html(BOOK_URL.format(slug=slug)), SITE)
+        """
+        Список глав — вкладка «Главы» карточки.
+
+        Отдаёт только первичную виртуальную страницу списка: остальное сайт
+        догружает через закрытый в `robots.txt` `/api`, поэтому `?page=N`
+        одну и ту же страницу и не помогает.
+        """
+        return parsing.chapters_from_page(self._html(CHAPTERS_URL.format(slug=slug)), SITE)
+
+    def chapter_pages(self, key: str, chapter: Any, **_: Any) -> list[str]:
+        """
+        Адреса картинок главы.
+
+        Адрес главы берётся из записи (`url` из `chapters()`), иначе
+        собирается из slug и id главы — на сайте глава адресуется uuid.
+        """
+        url = chapter_field(chapter, "url")
+        if not url:
+            slug, ident = str(key).strip("/"), chapter_field(chapter, "id")
+            if not slug or not ident:
+                raise InkStoryError(f"Не удалось определить адрес главы: {chapter!r}")
+            url = CHAPTER_URL.format(slug=slug, id=ident)
+        return parsing.reader_pages(self._html(url))
 
     def total_pages(self) -> int:
         """Число страниц каталога из пагинации (последняя может обновиться)."""

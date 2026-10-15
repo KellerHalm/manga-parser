@@ -30,6 +30,16 @@ class Source(Protocol):
     def chapters(self, key: str, **kwargs: Any) -> Sequence[Any]:
         """Список глав."""
 
+    def chapter_pages(self, key: str, chapter: Any, **kwargs: Any) -> list[str]:
+        """
+        URL страниц (картинок) главы — записи из `chapters()`.
+
+        Ключ тайтла и сама глава передаются явно: у источников глава
+        адресуется по-разному (id MangaLIB, `dir` ReManga, номер BuZuManga,
+        адрес страницы SelfManga/InkStory), и запись из `chapters()` знает
+        все нужные поля сама.
+        """
+
     def iter_catalog(
         self,
         *,

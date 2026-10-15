@@ -14,6 +14,9 @@ HTML-разметке и микроразметке schema.org.
       `robots.txt` (`/manga/?page=*`, `/manga/search/*`, `/manga/*/vol*/ch*/`),
       поэтому `catalog()` — это срез уже скачанного sitemap, а не обход
       страниц: весь каталог стоит один сетевой запрос;
+    * страницы глав запрещены с единственным исключением —
+      `Allow: /manga/*/vol*/ch1/rus`, поэтому `chapter_pages()` отдаёт
+      картинки только первой главы тома, а для остальных отказывает;
     * `search()` работает локально по sitemap, как у Com-X: серверный поиск
       закрыт, а в sitemap лежит название из slug (транслитерация оригинального
       названия), поэтому по русскому названию поиск не находит;
@@ -40,7 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ...core.http import Http, SourceError, build_session
-from ...core.models import Item
+from ...core.models import Item, chapter_field
 from ...core.ports import Checkpoint
 from ...core.text import to_int
 from . import parsing
@@ -267,6 +270,38 @@ class DesuClient:
         """Главы тайтла — весь список лежит на карточке, одним запросом."""
         ident, slug = self._ident_slug(key)
         return parsing.chapters(self._html(MANGA_URL.format(key=f"{slug}.{ident}")), SITE)
+
+    def chapter_pages(self, key: str, chapter: Any, **_: Any) -> list[str]:
+        """
+        Адреса картинок главы — только для глав, разрешённых robots.txt.
+
+        Сайт закрывает страницы глав: `Disallow: /manga/*/vol*/ch*/` с единственным
+        исключением `Allow: /manga/*/vol*/ch1/rus`. Поэтому забирается первая
+        глава тома, а для любой другой метод честно отказывает, вместо того
+        чтобы обходить запрет.
+
+        Список картинок лежит не в разметке, а в ответе ридера
+        `/api/manga/<id>/chapters/<id>` — сам эндпоинт в robots.txt не закрыт.
+        """
+        url = chapter_field(chapter, "url")
+        if not parsing.is_robots_free_chapter(url):
+            raise DesuError(
+                f"Страница главы закрыта в robots.txt сайта, доступна только первая "
+                f"глава тома (.../volN/ch1/rus): {url or key}"
+            )
+
+        state = parsing.reader_state(self._html(url))
+        base = str(state.get("apiBaseUrl") or "").strip()
+        ident = (state.get("chapter") or {}).get("id")
+        if not base or ident is None:
+            raise DesuError(f"Ридер не отдал адрес страниц главы: {url}")
+
+        payload = self.http.get_json(f"{SITE}{base.rstrip('/')}/chapters/{ident}")
+        chapter_data = payload.get("chapter") if isinstance(payload, dict) else None
+        pages = parsing.chapter_page_urls(chapter_data or {})
+        if not pages:
+            raise DesuError(f"В главе нет доступных страниц: {url}")
+        return pages
 
     def stats(self) -> int:
         """Всего тайтлов в каталоге."""

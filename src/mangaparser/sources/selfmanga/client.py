@@ -40,6 +40,7 @@ from typing import Any
 
 from ...core.http import Http, SourceError, Throttle, build_session
 from ...core.models import Item
+from ...core.models import chapter_field as _get
 from ...core.ports import Checkpoint
 from . import parsing
 
@@ -305,14 +306,12 @@ class SelfMangaClient:
             raise SelfMangaError(f"Не удалось извлечь slug тайтла из ключа: {key!r}")
         return parsing.chapters(self._html(BOOK_URL.format(slug=slug)), SITE)
 
-    def chapter_pages(
-        self, key: str, vol: int | str | None = None, num: int | str | None = None
-    ) -> list[str]:
+    def chapter_pages(self, key: str, chapter: Any, **_: Any) -> list[str]:
         """
         Адреса картинок главы — для загрузки изображений.
 
-        `key` — slug тайтла либо готовый адрес главы (например, `url` из
-        `chapters()`); `vol` и `num` нужны только в первом случае.
+        Адрес главы берётся из самой записи (`url` из `chapters()`), а если
+        её нет — собирается из `key` и номера главы.
 
         Список страниц лежит в разметке ридера (`rm_h.readerInit`), и сайт
         отдаёт его не всегда: главы 18+ и главы, которые ещё не опубликованы,
@@ -320,7 +319,8 @@ class SelfMangaClient:
         картинок. Тогда возвращается пустой список: это ограничение сайта, а не
         неудачный разбор.
         """
-        url = chapter_url(key, vol, num)
+        url = _get(chapter, "url")
+        url = chapter_url(url) if url else chapter_url(key, _get(chapter, "vol"), _get(chapter, "num"))
         return parsing.reader_pages(self._html(url))
 
     def stats(self) -> int:

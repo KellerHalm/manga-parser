@@ -45,11 +45,8 @@ REGISTRY: dict[str, SourceSpec] = {
         SourceSpec("inkstory", "mangaparser.sources.inkstory.client"),
         SourceSpec("buzumanga", "mangaparser.sources.buzumanga.client"),
         SourceSpec("comx", "mangaparser.sources.comx.client"),
-<<<<<<< HEAD
         SourceSpec("desu", "mangaparser.sources.desu.client"),
-=======
         SourceSpec("selfmanga", "mangaparser.sources.selfmanga.client"),
->>>>>>> 2461edd3c0b5f630b93f4f89d696b9a40970d7d5
     )
 }
 

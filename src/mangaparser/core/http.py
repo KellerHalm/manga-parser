@@ -56,7 +56,12 @@ class Http:
             raise self.error(f"Не найдено: {response.url}")
         if response.status_code == 422:
             raise self.error(f"Некорректные параметры: {response.url} -> {response.text[:200]}")
-        response.raise_for_status()
+        if response.status_code >= 400:
+            # Любой другой код ответа (401, 451 «закрыто по требованию
+            # правообладателя», лимит, бан) приходит тем же SourceError:
+            # обход каталога и enrich ловят именно его, пропускают запись и
+            # идут дальше, а сырое HTTPError обрывало бы весь обход.
+            raise self.error(f"Ответ {response.status_code}: {response.url}")
         return response
 
     def get_json(self, url: str, params: Mapping[str, Any] | None = None) -> Any:

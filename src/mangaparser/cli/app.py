@@ -243,7 +243,7 @@ def split_source(argv: Sequence[str]) -> tuple[str | None, list[str]]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="main.py",
-        description="Парсеры каталогов манги (MangaLIB, ReManga, InkStory, BuZuManga, Com-X)",
+        description="Парсеры каталогов манги (MangaLIB, ReManga, InkStory, BuZuManga, Com-X, Desu.Me)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Формат:  python main.py <источник> <команда> [аргументы]\n\n"

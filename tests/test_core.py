@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from mangaparser.core.http import Throttle
+from mangaparser.core.http import Http, SourceError, Throttle
 from mangaparser.core.models import Chapter, Item, is_blank, merge_details
 from mangaparser.core.text import dedupe, label, strip_tags, to_compact_int, to_float, to_int
 from mangaparser.sources.mangalib.client import Manga
 from mangaparser.sources.remanga.client import Title
+from tests.conftest import FakeResponse, FakeSession
 
 
 class TestText:
@@ -65,6 +66,25 @@ class TestText:
     def test_dedupe_keeps_first_occurrence(self) -> None:
         rows = [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}, {"id": 1, "v": "c"}]
         assert dedupe(rows, "id") == [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}]
+
+
+class TestHttp:
+    @pytest.mark.parametrize("status", [404, 422, 401, 451, 503])
+    def test_http_errors_become_source_error(self, status: int) -> None:
+        """
+        Любой код ответа >= 400 — это SourceError, а не сырое HTTPError.
+
+        Обход каталога и `enrich` ловят SourceError: пропускают запись и идут
+        дальше. Страницы, закрытые по решению правообладателя (451), — это
+        норма для части каталога, а не сбой обхода.
+        """
+        session = FakeSession({"/manga/": FakeResponse(status_code=status, url="https://x/manga/1/")})
+        with pytest.raises(SourceError, match=None if status in (404, 422) else str(status)):
+            Http(session).get_text("https://x/manga/1/")
+
+    def test_successful_response_is_returned_as_is(self) -> None:
+        session = FakeSession({"/manga/": FakeResponse(text="карточка")})
+        assert Http(session).get_text("https://x/manga/1/") == "карточка"
 
 
 class TestThrottle:

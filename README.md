@@ -1,8 +1,8 @@
 # manga-parser
 
 Парсеры каталогов манги: **MangaLIB**, **ReManga**, **InkStory**, **BuZuManga**,
-**Com-X**. Один вход, одинаковые команды для всех источников, чистая архитектура —
-новый сайт подключается без правок логики и CLI.
+**Com-X**, **Desu.Me**. Один вход, одинаковые команды для всех источников,
+чистая архитектура — новый сайт подключается без правок логики и CLI.
 
 ## Быстрый старт
 
@@ -16,6 +16,7 @@ python main.py remanga  catalog --page 1
 python main.py buzumanga dump --csv --max-pages 10
 python main.py comx      search "schenok"
 python main.py inkstory dump --csv --max-pages 10
+python main.py desu      search "one piece"
 python main.py all      search "наруто"           # по всем источникам сразу
 ```
 
@@ -77,6 +78,7 @@ python main.py remanga enrich --limit 0 --csv      # 2: дозагрузка к�
 | **ReManga**  | да       | да + рубрики `categories` | да                  | да (`authors` / `publishers`)          | возрастное ограничение, заметка, обои, наличие аниме     |
 | **InkStory** | да       | да                       | да + число голосов   | автор, художник, издатели, переводчики, журнал | страна, статус, год, главы, просмотры, лайки, другие названия |
 | **BuZuManga** | да      | да (`tags`)              | да + число голосов   | —                                      | закладки, дата оригинала, типы, возрастной рейтинг     |
+| **Desu.Me**  | да       | да + рубрики `tags`      | да + число голосов   | авторы, переводчики                    | год, статус оригинала и перевода, просмотры, направление чтения, другие названия |
 | **MangaLIB** | —        | —                        | только из каталога   | —                                      | сайт не отдаёт это в API                                |
 | **Com-X**    | —        | —                        | —                    | —                                      | только sitemap: id, url, название, `lastmod`            |
 
@@ -150,6 +152,38 @@ python main.py comx search "schenok"
 python main.py comx details 34100
 ```
 
+### Desu.Me: особенности сайта
+
+desu.uno (XenForo) отдаёт всё нужное в разметке, но `robots.txt` закрывает три
+вещи, которые обычно и делают каталог: пагинацию `/manga/?page=N`, поиск
+`/manga/search/*` и страницы глав `/manga/*/vol*/ch*/`. Из открытого остаются
+свой sitemap и карточка тайтла — на этом источник и построен:
+
+| Что             | Откуда                                    |
+|-----------------|-------------------------------------------|
+| каталог         | `/sitemap.php` — 7 056 карточек, 1 запрос |
+| карточка        | `/manga/<slug>.<id>/` — открыта            |
+| список глав     | целиком лежит на карточке, без пагинации   |
+
+Поэтому `catalog()` — это срез уже скачанного sitemap (весь каталог стоит один
+сетевой запрос), а `search()` ищет локально: в sitemap лежит название из slug,
+то есть искать нужно по оригинальному названию, а не по русскому. `details()`
+и `chapters()` идут на карточку и отдают всё остальное — описание, жанры,
+авторов, переводчиков, рейтинг, просмотры и полный список глав:
+
+```bash
+python main.py desu dump --csv                  # весь каталог, 1 запрос
+python main.py desu search "one piece"          # по оригинальному названию
+python main.py desu details 12                  # id подставится сам
+python main.py desu chapters 12
+python main.py desu enrich --limit 0 --csv      # полные карточки всего каталога
+```
+
+Часть тайтлов в sitemap отдаёт 451 («закрыто по требованию правообладателя»)
+или 401 — это норма, а не сбой: такие записи `enrich` пропускает и идёт дальше
+(ради этого `Http` поднимает `SourceError` на любой код ответа >= 400, а не
+только на 404/422 — иначе сырое исключение обрывало бы весь обход).
+
 ## Архитектура
 
 Зависимости идут строго сверху вниз, обратных импортов нет.
@@ -165,7 +199,8 @@ src/mangaparser/
 │   ├── remanga/              client.py + модель Title
 │   ├── inkstory/             client.py + модель Book + parsing.py (разбор HTML)
 │   ├── buzumanga/            client.py + модель Manga + slug.py (транслитерация)
-│   └── comx/                 client.py + модель Title + parsing.py (sitemap)
+│   ├── comx/                 client.py + модель Title + parsing.py (sitemap)
+│   └── desu/                 client.py + модель Title + parsing.py (sitemap + карточка)
 ├── infrastructure/
 │   └── storage/              exporters.py, checkpoint.py, sqlite_index.py
 └── core/                     контракты и утилиты, внешних зависимостей нет
@@ -173,7 +208,7 @@ src/mangaparser/
     ├── models.py             Item, Chapter, merge_details, extract_pages
     ├── http.py               сессия с ретраями, Http, Throttle
     └── text.py               strip_tags, to_float, to_int, to_compact_int, label, dedupe
-tests/                        131 тест без обращения к сети
+tests/                        148 тестов без обращения к сети
 data/                         выгрузки (git-ignored)
 ```
 

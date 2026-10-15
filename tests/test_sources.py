@@ -13,6 +13,8 @@ from mangaparser.sources.buzumanga.client import (
 )
 from mangaparser.sources.comx import parsing as comx_parsing
 from mangaparser.sources.comx.client import ComXClient, ComXError
+from mangaparser.sources.desu import parsing as desu_parsing
+from mangaparser.sources.desu.client import DesuClient, DesuError
 from mangaparser.sources.inkstory import parsing
 from mangaparser.sources.inkstory.client import InkStoryClient
 from mangaparser.sources.mangalib.client import MangaLibClient
@@ -638,3 +640,267 @@ class TestInkStory:
         self.client(session).catalog(page=3)
         _, params = session.calls[0]
         assert params == {"page": 3}
+
+
+DESU_SITEMAP = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>https://desu.uno/</loc></url>
+<url><loc>https://desu.uno/manga/air-gear.1/</loc><lastmod>2023-12-20T20:34:05+00:00</lastmod></url>
+<url><loc>https://desu.uno/manga/one-piece.12/</loc><lastmod>2026-10-08T17:09:25+00:00</lastmod></url>
+<url><loc>https://desu.uno/manga/berserk.368/</loc><lastmod>2025-02-11T09:00:00+00:00</lastmod></url>
+</urlset>
+"""
+
+#: Карточка такая, как её отдаёт сайт: заголовок с русским и оригинальным
+#: названием, блок характеристик (`b-entry-info`) с метками и вложенными
+#: `<div>` у «Читать»/«Просмотров», микроразметка рейтинга и список глав.
+DESU_CARD_HTML = """
+<html><head>
+<meta property="og:image" content="https://static.desu.uno/data/manga/covers/snippet/12.jpg">
+<meta content="Ван Пис" itemprop="headline">
+</head><body>
+<div class="titleBar">
+<h1><span class="name" title="оригинальное название">One Piece</span>
+<span class="rus-name" title="русское название">Ван Пис</span></h1>
+</div>
+<div class="c-poster ">
+<img src="https://static.desu.uno/data/manga/covers/preview/12.jpg?1654158596"
+     alt="One Piece" class="LbImage" itemprop="image" />
+<div style="display:none">
+<a class="LbTrigger" href="https://static.desu.uno/data/manga/covers/snippet/12.jpg"></a>
+</div>
+</div>
+<div class="b-db_entry">
+<div class="b-entry-info">
+<div class="line-container"><div class="line">
+<div class="key">Тип:</div><div class="value">Манга</div>
+</div></div>
+<div class="line-container"><div class="line">
+<div class="key">Статус:</div><div class="value">
+<span class="b-anime_status_tag ongoing">выходит</span>
+с 22 июл 1997 г.
+</div>
+</div></div>
+<div class="line-container"><div class="line">
+<div class="key">Перевод:</div><div class="value">
+<span class="b-anime_status_tag continued">продолжается</span>
+</div>
+</div></div>
+<div class="line-container"><div class="line">
+<div class="key">Жанры:</div><div class="value">
+<ul class="tagList" style="display:inline;">
+<li><a class="tag" itemprop="genre" href="manga/?genres=66-Martial Arts">Боевые искусства</a></li>
+<li><a class="tag" itemprop="genre" href="manga/?genres=50-Drama">Драма</a></li>
+<li><a class="tag Tooltip" itemprop="genre" href="manga/?genres=150-Artifacts"># Артефакты</a></li>
+<li><span onclick="$('.tagList li').fadeIn()">…</span></li>
+</ul>
+</div>
+</div></div>
+<div class="line-container"><div class="line">
+<div class="key">Другие названия:</div>
+<div class="value"><span class="alternativeHeadline" itemprop="alternativeHeadline"
+style="display:none;">Большой куш</span><span onclick="$(this).hide()">…</span></div>
+</div></div>
+<div class="line-container"><div class="line">
+<div class="key">Читать:</div><div class="value"><div class="value">Справа налево</div></div>
+</div></div>
+<div class="line-container"><div class="line">
+<div class="key">Просмотров:</div><div class="value"><div class="value">1122879</div></div>
+</div></div>
+<div class="line-container"><div class="line">
+<div class="key">Авторы:</div><div class="value">
+<ul class="translators" style="display:inline;">
+<li><a class="b-tag Tooltip" href="manga/?people=1-Eiichiro Oda">Eiichiro Oda</a></li>
+<li><span class="bubbled-processed">Oda Eiichiro</span></li>
+</ul>
+</div>
+</div></div>
+<div class="line-container"><div class="line">
+<div class="key">Переводчики:</div><div class="value">
+<ul class="translators" style="display:inline;">
+<li><a class="b-tag Tooltip" href="http://timesc.ucoz.ru/">Times Cage</a></li>
+<li><span class="bubbled-processed">Zelmira Black Pearl</span></li>
+<li><span onclick="$('.translators li').fadeIn()">…</span></li>
+</ul>
+</div>
+</div></div>
+</div>
+<div class="b-rate rateable" data-score="9.33">
+<meta content="9.33" itemprop="ratingValue">
+<meta content="638" itemprop="ratingCount">
+</div>
+<div id="description" class="text shortened">
+<div class="russian" itemprop="description">
+<div class="prgrph">Последние слова Роджера ознаменовали начало Эры Пиратов.<br/>
+Миллионы людей отправились за мифическими сокровищами.</div>
+</div>
+</div>
+<ul class="chlist" style="display:block" data-manga_id="12">
+<li>
+<i aria-hidden="true" class="fa fa-download chDownload" data-chapters_id="699149"></i>
+<span class="date">8 окт 2026 в 20:05</span>
+<h4><a href="manga/one-piece.12/vol108/ch1196/rus" class="tips Tooltip"
+title="Том 108. Глава 1196: Нет ценности в любви">Том 108. Глава 1196<span class="title nowrap"> - Нет ценности в любви</span></a></h4>
+</li>
+<li>
+<i aria-hidden="true" class="fa fa-download chDownload" data-chapters_id="189238"></i>
+<span class="date">11 июл 2014 в 00:53</span>
+<h4><a href="manga/one-piece.12/vol1/ch0.5/rus" class="tips Tooltip"
+title="Том 1. Глава 0.5: Strong World">Том 1. Глава 0.5<span class="title nowrap"> - Strong World</span></a></h4>
+</li>
+<li>
+<i aria-hidden="true" class="fa fa-download chDownload" data-chapters_id="189237"></i>
+<span class="date">11 июл 2014 в 00:53</span>
+<h4><a href="manga/one-piece.12/vol1/ch0/rus" class="tips Tooltip"
+title="Том 1. Глава 0: Пролог">Том 1. Глава 0</a></h4>
+</li>
+</ul>
+</body></html>
+"""
+
+#: Страница-заглушка вместо карточки: сайт отдаёт её вместо 451 и 401.
+DESU_ERROR_HTML = "<html><head><title>Desu.Me - Ошибка</title></head><body>Ошибка</body></html>"
+
+
+class TestDesu:
+    def client(self, session: FakeSession) -> DesuClient:
+        return DesuClient(session=session, delay=0)
+
+    @staticmethod
+    def session() -> FakeSession:
+        return FakeSession({
+            "/sitemap.php": FakeResponse(text=DESU_SITEMAP),
+            "/manga/one-piece.12/": FakeResponse(text=DESU_CARD_HTML),
+            "/manga/air-gear.1/": FakeResponse(text=DESU_ERROR_HTML),
+        })
+
+    def test_catalog_maps_sitemap_rows(self) -> None:
+        client = self.client(self.session())
+        # корень сайта в каталог не попадает — только карточки манг
+        assert client.stats() == 3
+        title = client.catalog(page=1)[1]
+        assert title.id == 12
+        assert title.uid == "12"
+        assert title.key == "one-piece.12"
+        assert title.title == "One Piece"
+        assert title.slug == "one-piece"
+        assert title.url == "https://desu.uno/manga/one-piece.12/"
+        assert title.updated_at == "2026-10-08T17:09:25+00:00"
+        assert title.flat()["source"] == "desu"
+
+    def test_catalog_page_slices_without_requests(self) -> None:
+        session = self.session()
+        client = self.client(session)
+        client.catalog(page=1, count=1)
+        calls = len(session.calls)
+        assert [t.id for t in client.catalog(page=2, count=1)] == [12]
+        assert len(session.calls) == calls  # sitemap скачан один раз и закеширован
+
+    def test_sort_newest_and_alphabet(self) -> None:
+        client = self.client(self.session())
+        # в sitemap записи идут по id, поэтому порядок сайта — это разворот
+        assert [t.id for t in client.catalog(page=1, sort="newest")] == [368, 12, 1]
+        assert [t.title for t in client.catalog(page=1, sort="alphabet")] == [
+            "Air Gear", "Berserk", "One Piece",
+        ]
+
+    def test_search_is_local_over_sitemap(self) -> None:
+        session = self.session()
+        client = self.client(session)
+        assert [t.id for t in client.search("piece")] == [12]
+        assert [t.id for t in client.search("Berserk")] == [368]
+        assert client.search("ван пис") == []
+        assert len(session.calls) == 1  # серверный поиск закрыт, sitemap повторно не качается
+
+    def test_details_fills_card_fields(self) -> None:
+        title = self.client(self.session()).details("one-piece.12")
+        assert title.id == 12
+        assert title.title == "Ван Пис"  # русское название — как в остальных источниках
+        assert title.alt_title == "One Piece"
+        assert title.alt_titles == ["Большой куш"]
+        assert title.cover == "https://static.desu.uno/data/manga/covers/preview/12.jpg?1654158596"
+        assert title.description.startswith("Последние слова Роджера")
+        assert "Миллионы людей" in title.description
+        assert title.genres == ["Боевые искусства", "Драма"]
+        assert title.tags == ["Артефакты"]  # рубрики «#» отдельно от жанров
+        assert title.rating == 9.33
+        assert title.votes == 638
+        assert title.year == 1997
+        assert title.type == "Манга"
+        assert title.status == "выходит"
+        assert title.translation_status == "продолжается"
+        assert title.views == 1122879
+        assert title.direction == "Справа налево"
+        assert title.authors == ["Eiichiro Oda", "Oda Eiichiro"]
+        assert title.translators == ["Times Cage", "Zelmira Black Pearl"]
+        assert title.updated_at == "2026-10-08T17:09:25+00:00"  # дата есть только в sitemap
+
+    def test_details_accepts_id_slug_and_url(self) -> None:
+        """Ввод руками не требует знать slug: id и slug достраиваются по sitemap."""
+        client = self.client(self.session())
+        assert client.key_of("12") == "one-piece.12"
+        assert client.key_of("one-piece") == "one-piece.12"
+        assert client.key_of("https://desu.uno/manga/one-piece.12/") == "one-piece.12"
+        assert client.details("12").title == "Ван Пис"
+
+    def test_details_unknown_key_raises(self) -> None:
+        client = self.client(self.session())
+        for key in ("999999", "несуществующий"):
+            try:
+                client.details(key)
+            except DesuError as exc:
+                assert str(key) in str(exc)
+            else:  # pragma: no cover
+                raise AssertionError("ожидалась ошибка")
+
+    def test_unavailable_card_raises(self) -> None:
+        """Страница-заглушка вместо 451/401 — это ошибка источника, а не пустая карточка."""
+        try:
+            self.client(self.session()).details("air-gear.1")
+        except DesuError as exc:
+            assert "недоступна" in str(exc)
+        else:  # pragma: no cover
+            raise AssertionError("ожидалась ошибка")
+
+    def test_chapters_are_normalized(self) -> None:
+        chapters = self.client(self.session()).chapters("12")
+        assert len(chapters) == 3
+        first, middle, last = chapters
+        assert first["id"] == 699149
+        assert first["number"] == 1196.0
+        assert first["volume"] == 108
+        assert first["title"] == "Нет ценности в любви"
+        assert first["date"] == "8 окт 2026 в 20:05"
+        assert first["url"] == "https://desu.uno/manga/one-piece.12/vol108/ch1196/rus"
+        # номер главы бывает дробным, а у пролога названия нет
+        assert middle["number"] == 0.5
+        assert last["number"] == 0.0
+        assert last["title"] is None
+
+    def test_iter_catalog_writes_checkpoint(self, tmp_path) -> None:
+        client = self.client(self.session())
+
+        from mangaparser.infrastructure.storage import JsonlCheckpoint
+
+        checkpoint = JsonlCheckpoint(tmp_path / "cp.jsonl")
+        items = list(client.iter_catalog(count=2, checkpoint=checkpoint, on_page=lambda *_: None))
+        checkpoint.close()
+
+        assert [t.id for t in items] == [1, 12, 368]
+        rows = [line for line in (tmp_path / "cp.jsonl").read_text(encoding="utf-8").splitlines() if line]
+        assert json.loads(rows[1])["slug"] == "one-piece"
+
+    def test_parsing_helpers(self) -> None:
+        assert desu_parsing.entry("https://desu.uno/") is None
+        assert desu_parsing.entry("https://desu.uno/manga/one-piece.12/")["id"] == 12
+        assert desu_parsing.title_from_slug("") == ""
+        assert desu_parsing.title_from_slug("a-thugs-pure-love") == "A Thugs Pure Love"
+        assert desu_parsing.title_from_slug("idm-ON") == "Idm ON"
+        assert desu_parsing.split_list("A, B , C") == ["A", "B", "C"]
+        assert desu_parsing.split_list(None) == []
+        assert desu_parsing.year("с 21 сен 1999 г. по 10 ноя 2014 г.") == 1999
+        assert desu_parsing.year("с 2026 г.") == 2026
+        assert desu_parsing.year("выходит") is None
+        # нулевой рейтинг у нового тайтла — это «нет оценки», а не ноль
+        assert desu_parsing.rating('<div class="b-rate rateable" data-score="0">') is None
+        assert desu_parsing.info_regions(DESU_ERROR_HTML) == {}

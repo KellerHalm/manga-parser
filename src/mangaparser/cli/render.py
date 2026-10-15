@@ -10,7 +10,11 @@ EXAMPLES = (
     'python main.py mangalib search "берсерк"',
     "python main.py remanga  dump --csv --max-pages 5",
     "python main.py inkstory catalog --page 3 --sort viewsCount",
+<<<<<<< HEAD
     'python main.py desu     search "one piece"',
+=======
+    "python main.py selfmanga search \"берсерк\"",
+>>>>>>> 2461edd3c0b5f630b93f4f89d696b9a40970d7d5
     'python main.py all     search naruto',
     "python main.py index --catalog data/remanga_catalog.json --reset",
     'python main.py offline "берсерк"',

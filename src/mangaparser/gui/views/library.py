@@ -47,30 +47,39 @@ class LibraryView:
             self.body.controls = self._downloads(store)
 
     def body_view(self) -> ft.Column:
-        return self.body
+        """
+        Содержимое экрана целиком: переключатель вкладок + их содержимое.
+
+        Каркас приложения берёт именно `body_view()`, поэтому вкладки
+        обязаны быть здесь: если оставить их только в `view()`, на экране
+        их просто не будет.
+        """
+        return ft.Column([self._tabs(), self.body], expand=True, spacing=0)
+
+    def _tabs(self) -> ft.Tabs:
+        """
+        Переключатель вкладок.
+
+        У `ft.Tabs` обязателен `length`, а у `ft.TabBar` нет `bgcolor`:
+        цвет полосы берётся из темы, а её акцент задаёт `indicator_color`.
+        """
+        return ft.Tabs(
+            length=len(TABS),
+            selected_index=self.index,
+            on_change=lambda e: self.select(e.control.selected_index),
+            content=ft.TabBar(
+                indicator_color=theme.PRIMARY,
+                label_color=theme.TEXT,
+                unselected_label_color=theme.MUTED,
+                tabs=[ft.Tab(label=title) for title in TABS],
+            ),
+        )
 
     def view(self) -> ft.View:
         return ft.View(
             route="/library",
             appbar=self.appbar,
-            controls=[
-                ft.Tabs(
-                    selected_index=self.index,
-                    on_change=lambda e: self.select(e.control.selected_index),
-                    content=ft.TabBar(
-                        bgcolor=theme.BACKGROUND,
-                        indicator_color=theme.PRIMARY,
-                        label_color=theme.TEXT,
-                        unselected_label_color=theme.MUTED,
-                        tabs=[
-                            ft.Tab(label="Избранное"),
-                            ft.Tab(label="История"),
-                            ft.Tab(label="Скачанное"),
-                        ],
-                    ),
-                ),
-                self.body,
-            ],
+            controls=[self.body_view()],
             padding=0,
             bgcolor=theme.BACKGROUND,
         )

@@ -40,6 +40,8 @@ class App:
         self.explore_views: dict[str, ExploreView] = {}
         self.screens: dict[str, Any] = {}
         self.current: Any = None
+        self.history: list[str] = [ROOT]
+        self._going_back = False
         self._pending_title: tuple[str, str, str, str | None] | None = None
         self._pending_reader: ReaderView | None = None
 
@@ -57,18 +59,34 @@ class App:
         self.page.navigate(route)
 
     def back(self) -> None:
-        if len(self.page.views) > 1:
-            self.page.views.remove(self.page.views[-1])
-            self.page.update()
-        self.page.navigate(self._parent_route())
+        """
+        Вернуться на предыдущий экран.
 
-    def _parent_route(self) -> str:
-        routes = [view.route for view in self.page.views]
-        return routes[-2] if len(routes) > 1 else ROOT
+        Историю ведём сами: `page.views` здесь всегда содержит ровно один
+        экран (на каждый маршрут он строится заново), поэтому «предыдущий
+        маршрут» из стега Flet взять нельзя — без своей истории кнопка «назад»
+        из читалки уводила бы в библиотеку вместо карточки тайтла.
+        """
+        if len(self.history) > 1:
+            self.history.pop()
+            self._going_back = True
+            self.page.navigate(self.history[-1])
+        else:
+            self.page.navigate(ROOT)
 
     def _on_view_pop(self, e: ft.ViewPopEvent) -> None:
-        if e.view is not None and len(self.page.views) > 1:
-            self.page.views.remove(e.view)
+        """Системная кнопка «назад» и стрелка в шапке."""
+        if not self._going_back:
+            self.back()
+
+    def _remember(self, route: str) -> None:
+        if self._going_back:
+            # маршрут уже в истории — это переход назад, не новая запись
+            self._going_back = False
+            return
+        if self.history and self.history[-1] == route:
+            return
+        self.history.append(route)
 
     def _on_resize(self, e: Any) -> None:
         self._apply_shell()
@@ -77,6 +95,7 @@ class App:
     def _on_route_change(self, e: ft.RouteChangeEvent) -> None:
         route = e.route or ROOT
         parts = self._split(route)
+        self._remember(route)
         self.page.views.clear()
         self.page.views.append(self._build(route, parts))
         # Навигация вешается на уже прикреплённый верхний экран: иначе
@@ -225,6 +244,11 @@ class App:
 
     def _on_tab_change(self, e: ft.ControlEvent) -> None:
         index = int(getattr(e.control, "selected_index", 0) or 0)
+        if not 0 <= index < len(TABS):
+            return
+        # Переход между разделами — новая точка отсчёта: «назад» из каталога
+        # ведёт в библиотеку, а не в карточку тайтла, из которой попали.
+        self.history.clear()
         self.page.navigate(TABS[index][0])
 
     def refresh(self) -> None:

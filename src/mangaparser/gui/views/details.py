@@ -57,7 +57,7 @@ class DetailsView:
         self.error: str | None = None
 
         self.scroll = ft.Column(expand=True, spacing=0, scroll=ft.ScrollMode.AUTO)
-        self.title_bar = ft.AppBar(
+        self.appbar = ft.AppBar(
             title=ft.Text(title, size=17),
             bgcolor=theme.BACKGROUND,
             leading=ft.IconButton(
@@ -157,7 +157,7 @@ class DetailsView:
                 status_of(self.item) if self.item is not None else None,
             )
             widgets.toast(self.app.page, "Добавлено в библиотеку", ft.Icons.BOOKMARK_ADD)
-        self.title_bar.actions = [self._favorite_button()]
+        self.appbar.actions = [self._favorite_button()]
         self.app.refresh()
 
     def _render(self) -> None:
@@ -166,7 +166,7 @@ class DetailsView:
             blocks.append(self._description())
         blocks.append(self._chapters_block())
         self.scroll.controls = blocks
-        self.title_bar.title = ft.Text(self.title, size=17, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
+        self.appbar.title = ft.Text(self.title, size=17, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
 
     def _hero(self) -> ft.Control:
         cover_src = self.state.cover(self.cover, self.source) or self.cover
@@ -527,7 +527,7 @@ class DetailsView:
     def view(self) -> ft.View:
         return ft.View(
             route=f"/title/{self.source}/{self.key}",
-            appbar=self.title_bar,
+            appbar=self.appbar,
             controls=[self.scroll],
             padding=0,
             bgcolor=theme.BACKGROUND,

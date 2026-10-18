@@ -370,6 +370,9 @@ class ReaderView:
         if target == self.current:
             return
         self.current = max(0, min(target, len(self.urls) - 1))
+        # Счётчик страниц обновляем здесь же: иначе после перетаскивания
+        # ползунка он продолжает показывать прежнюю страницу.
+        self.page_label.value = f"стр. {self.current + 1} из {len(self.urls)}"
         self._scroll_to(self.current)
         self._save()
 
@@ -377,9 +380,18 @@ class ReaderView:
         if self._pager is not None:
             self._pager.selected_index = index
         elif self._list is not None:
-            self.app.page.run_task(
-                self._list.scroll_to, scroll_key=f"page-{index}", duration=120
-            )
+            # Прокрутка к конкретной странице — запрос к клиенту, и он может
+            # не ответить (страница ещё не построена, окно свернуто). Ошибка
+            # здесь не должна ронять обработчик: страница всё равно сменится.
+            self.app.page.run_task(self._jump_to, index)
+
+    async def _jump_to(self, index: int) -> None:
+        if self._list is None:
+            return
+        try:
+            await self._list.scroll_to(scroll_key=f"page-{index}", duration=120)
+        except Exception:
+            return
 
     def _save(self, force: bool = False) -> None:
         if not self.urls:

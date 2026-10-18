@@ -16,3 +16,6 @@ dist/
 data/*
 !data/.gitkeep
 !data/README.md
+
+# скриншоты GUI (tools/gui_shots.py)
+shots/

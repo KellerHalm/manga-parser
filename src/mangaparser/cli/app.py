@@ -151,6 +151,24 @@ def cmd_merge(args: argparse.Namespace, report: Reporter) -> int:
     return 0
 
 
+def cmd_gui(args: argparse.Namespace, report: Reporter) -> int:
+    """Графическое приложение. Требует `pip install flet`."""
+    try:
+        import flet as ft
+    except ImportError:
+        report.info(
+            "Для графического приложения нужен Flet:\n"
+            "    pip install -r requirements.txt      # или: pip install flet"
+        )
+        return 2
+
+    from ..gui.app import main as gui_main
+
+    view = ft.AppView.WEB_BROWSER if args.web else ft.AppView.FLET_APP
+    ft.run(gui_main, host=args.host, port=args.port, view=view)
+    return 0
+
+
 def _clients(name: str) -> list[Any]:
     return [spec.build() for spec in resolve_many(name)]
 
@@ -253,7 +271,7 @@ VALUE_FLAGS = {"--out", "--catalog", "--index", "--query", "-o"}
 
 def command_names() -> set[str]:
     """Все имена команд CLI, включая глобальные."""
-    return {name for name, *_ in COMMANDS} | {"sources", "index", "offline", "merge"}
+    return {name for name, *_ in COMMANDS} | {"sources", "index", "offline", "merge", "gui"}
 
 
 def split_source(argv: Sequence[str]) -> tuple[str | None, list[str]]:
@@ -333,6 +351,12 @@ def build_parser() -> argparse.ArgumentParser:
     mg.add_argument("--out", type=Path, default=ROOT / "data" / "all_catalog.json")
     mg.add_argument("--no-csv", action="store_true")
     mg.set_defaults(handler=cmd_merge, needs_source=False)
+
+    gui = sub.add_parser("gui", help="графическое приложение (Flet: Android / iOS / десктоп)")
+    gui.add_argument("--host", default=None, help="хост веб-сервера для отладки в браузере")
+    gui.add_argument("--port", type=int, default=0, help="порт веб-сервера")
+    gui.add_argument("--web", action="store_true", help="открыть в браузере вместо окна")
+    gui.set_defaults(handler=cmd_gui, needs_source=False)
 
     return parser
 

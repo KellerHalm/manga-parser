@@ -27,6 +27,15 @@ TEXT = "#F2F2F7"
 RATING_COLORS = ("#6E6E80", "#5E9E5E", "#9DB44A", "#D2A03C", "#D4762B", "#D8443C")
 
 
+def veil(opacity: float) -> str:
+    """Полупрозрачный чёрный: затемнение под панелями читалки и обложками.
+
+    Строится через `Colors.with_opacity`: строка `rgba(...)` внутри `Stack`
+    в Flet 1.0 молча не рисуется, а через этот формат — рисуется.
+    """
+    return ft.Colors.with_opacity(opacity, "#000000")
+
+
 def rating_color(value: float | None) -> str:
     if value is None:
         return MUTED
@@ -135,12 +144,7 @@ def cover_shade() -> ft.Paint:
         gradient=ft.LinearGradient(
             begin=ft.Alignment.TOP_CENTER,
             end=ft.Alignment.BOTTOM_CENTER,
-            colors=[
-                "rgba(0,0,0,0)",
-                "rgba(0,0,0,0.35)",
-                "rgba(0,0,0,0.82)",
-                "rgba(0,0,0,0.97)",
-            ],
+            colors=[veil(a) for a in (0.0, 0.35, 0.82, 0.97)],
             stops=[0.28, 0.55, 0.78, 1.0],
         )
     )

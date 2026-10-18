@@ -70,6 +70,8 @@ class ReaderView:
         self._controls: list[ft.Container] = []
         self._list: ft.ListView | None = None
         self._pager: ft.PageView | None = None
+        self._heights: dict[int, float] = {}  # h/w для уже загруженных страниц
+        self._width: float | None = None  # ширина списка, подогнанная по контенту
         self._stop = threading.Event()
 
         self.container = ft.Container(expand=True, bgcolor="#000000")
@@ -84,7 +86,7 @@ class ReaderView:
         self.page_label = ft.Text("", size=12, color="#B9B9C6")
         self.top_bar = ft.Container(
             alignment=ft.Alignment.TOP_CENTER,
-            bgcolor="rgba(0,0,0,0.9)",
+            bgcolor=theme.veil(0.9),
             padding=theme.pad(left=4, right=4, top=4, bottom=4),
             content=ft.Row(
                 [
@@ -133,7 +135,7 @@ class ReaderView:
         )
         self.bottom_bar = ft.Container(
             alignment=ft.Alignment.BOTTOM_CENTER,
-            bgcolor="rgba(0,0,0,0.9)",
+            bgcolor=theme.veil(0.9),
             padding=theme.pad(left=14, right=14, top=6, bottom=10),
             content=ft.Column(
                 [
@@ -204,6 +206,11 @@ class ReaderView:
         self._build_controls()
         self._resume()
         self._render()
+        # В постраничном режиме позицию ставит PageView по selected_index;
+        # в вебтунсе список нужно доскроллить самим, иначе глава всегда
+        # открывается с первой страницы.
+        if self.mode == "webtoon" and self.current:
+            self._scroll_to(self.current)
         self._prefetch()
 
     def _resume(self) -> None:
@@ -227,11 +234,14 @@ class ReaderView:
             content=_placeholder(),
             bgcolor="#000000",
         )
-        if index < len(self.files) and self.files[index]:
-            self._fill(box, self.files[index])
+        if self.files[index]:
+            self._fill(index, self.files[index])
         return box
 
-    def _fill(self, box: ft.Container, path: str) -> None:
+    def _fill(self, index: int, path: str | None) -> None:
+        if not path or index >= len(self._controls):
+            return
+        box = self._controls[index]
         box.bgcolor = None
         if self.mode == "webtoon":
             box.content = ft.GestureDetector(
@@ -248,6 +258,26 @@ class ReaderView:
                 ),
                 on_tap=self._tap,
             )
+        self._measure(index, path)
+
+    def _measure(self, index: int, path: str) -> None:
+        """
+        Запомнить пропорции страницы (h/w).
+
+        В вебтунсе страница занимает всю ширину окна: зная пропорции, можно
+        точно посчитать, на какой высоте начинается любая страница.
+        `scroll_to(scroll_key=...)` в Flet 1.0 не работает (тихо игнорируется),
+        поэтому переход к странице идёт по вычисленному offset.
+        """
+        try:
+            from PIL import Image
+
+            with Image.open(path) as im:
+                width, height = im.size
+            if width > 0:
+                self._heights[index] = height / width
+        except Exception:
+            return
 
     # ---------- докачка страниц ----------
 
@@ -275,7 +305,7 @@ class ReaderView:
                     ready += 1
                 if ready >= PRELOAD:
                     ready = 0
-                    self._fill(self._controls[index], path or "")
+                    self._fill(index, self.files[index])
                     self._sync()
                     self.app.refresh()
             self._fill_pending()
@@ -291,7 +321,7 @@ class ReaderView:
         """Подставить всё, что скачалось, — после паузы или смены режима."""
         for index, path in enumerate(self.files):
             if path and not _has_image(self._controls[index]):
-                self._fill(self._controls[index], path)
+                self._fill(index, path)
         self._sync()
         self.app.refresh()
 
@@ -319,7 +349,7 @@ class ReaderView:
         )
         for index, path in enumerate(self.files):
             if path:
-                self._fill(self._controls[index], path)
+                self._fill(index, path)
         self._sync()
         self._render()
         self.app.refresh()
@@ -336,8 +366,12 @@ class ReaderView:
             return
         self.current = target
         self._render()
+        # Шаг должен снять и прокрутку: иначе в вебтунсе список стоит на
+        # месте, а в постраничном режиме заметен только счётчик страниц.
+        self._scroll_to(target)
         self._prefetch()
         self._save()
+        self.app.refresh()
 
     def _chapter_index(self) -> int:
         wanted = chapter_key(self.chapter)
@@ -377,7 +411,10 @@ class ReaderView:
         self._save()
 
     def _scroll_to(self, index: int) -> None:
-        if self._pager is not None:
+        # Смотрим на текущий режим, а не на «контрол не пуст»: после смены
+        # режима неактуальный список/пейджер остаются живыми и установка
+        # только им ничего не двигает на экране.
+        if self.mode == "paged" and self._pager is not None:
             self._pager.selected_index = index
         elif self._list is not None:
             # Прокрутка к конкретной странице — запрос к клиенту, и он может
@@ -389,9 +426,23 @@ class ReaderView:
         if self._list is None:
             return
         try:
-            await self._list.scroll_to(scroll_key=f"page-{index}", duration=120)
+            await self._list.scroll_to(offset=self._offset_before(index), duration=200)
         except Exception:
             return
+
+    def _offset_before(self, index: int) -> int:
+        """Высота списка над страницей `index`.
+
+        Загруженные страницы считаются по пропорциям картинки, остальные —
+        по высоте заглушки: точный переход, когда страницы уже скачаны,
+        и приближённый, пока они ещё грузятся.
+        """
+        width = self._width or (self.app.page.width or 400)
+        offset = 0.0
+        for i in range(min(max(index, 0), len(self.urls))):
+            ratio = self._heights.get(i)
+            offset += width * ratio if ratio else PLACEHOLDER_HEIGHT
+        return int(offset)
 
     def _save(self, force: bool = False) -> None:
         if not self.urls:
@@ -509,15 +560,41 @@ class ReaderView:
 
     def _on_webtoon_scroll(self, e: ft.OnScrollEvent) -> None:
         """Текущая страница по прокрутке: она нужна для прогресса и слайдера."""
-        if not self.urls or not e.viewport_dimension:
+        if not self.urls:
             return
-        per_page = max(e.viewport_dimension * 1.5, 1.0)
-        page = max(0, min(int(e.pixels / per_page), len(self.urls) - 1))
+        self._calibrate(e)
+        page = self._page_at(e.pixels)
         if page != self.current:
             self.current = page
             self.slider.value = page
             self.page_label.value = f"стр. {page + 1} из {len(self.urls)}"
             self._save()
+
+    def _calibrate(self, e: ft.OnScrollEvent) -> None:
+        """Подогнать ширину списка под реальный контент.
+
+        Дисплей лезет во всю ширину окна минус отступы `SafeArea`, и их значение
+        известно только клиенту. Зато событие прокрутки говорит, сколько пикселей
+        контента реально есть: суммарная высота известна из пропорций картинок,
+        откуда и выводится ширина. Без этого переходы по страницам плывут на
+        высоту всех отступов.
+        """
+        if not self._heights or not e.max_scroll_extent:
+            return
+        total = e.max_scroll_extent + e.viewport_dimension
+        unknown = len(self.urls) - len(self._heights)
+        ratios = sum(self._heights.values())
+        width = (total - unknown * PLACEHOLDER_HEIGHT) / ratios
+        if 100 < width < 10000 and width != self._width:
+            self._width = width
+
+    def _page_at(self, pixels: float) -> int:
+        """Номер страницы, начинающейся на высоте `pixels`."""
+        last = len(self.urls) - 1
+        for i in range(last, -1, -1):
+            if pixels >= self._offset_before(i):
+                return i
+        return 0
 
     def _on_page_change(self, e: ft.ControlEvent) -> None:
         self.current = int(e.control.selected_index)
@@ -527,6 +604,15 @@ class ReaderView:
         self._save()
 
     def view(self) -> ft.View:
+        # Панели закреплены позиционированием: контейнер, вложенный в дерево,
+        # без привязки растягивается на весь `Stack` и фоны (в том числе
+        # полупрозрачные) отрисовываются недетерминированно.
+        self.top_bar.left = 0
+        self.top_bar.top = 0
+        self.top_bar.right = 0
+        self.bottom_bar.left = 0
+        self.bottom_bar.bottom = 0
+        self.bottom_bar.right = 0
         return ft.View(
             route=f"/read/{self.source}/{self.key}",
             controls=[
@@ -541,7 +627,6 @@ class ReaderView:
             padding=0,
             bgcolor="#000000",
         )
-
 
 def _placeholder() -> ft.Control:
     return ft.Container(

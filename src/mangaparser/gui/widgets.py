@@ -127,7 +127,7 @@ def rating_badge(value: float | None) -> ft.Container:
     return ft.Container(
         padding=theme.pad(left=7, right=7, top=3, bottom=3),
         border_radius=theme.radius(8),
-        bgcolor="rgba(0,0,0,0.66)",
+        bgcolor=theme.veil(0.66),
         content=ft.Row(
             [
                 ft.Icon(ft.Icons.STAR_ROUNDED, size=13, color=theme.rating_color(value)),
@@ -274,7 +274,7 @@ def cover_card(
                     icon=ft.Icons.FAVORITE if is_favorite else ft.Icons.FAVORITE_BORDER,
                     icon_size=19,
                     icon_color=theme.PRIMARY if is_favorite else "#FFFFFF",
-                    bgcolor="rgba(0,0,0,0.5)",
+                    bgcolor=theme.veil(0.5),
                     on_click=lambda e: on_favorite(item),
                 ),
             )

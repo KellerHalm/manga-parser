@@ -14,7 +14,7 @@ manga-gui = "mangaparser.gui:run"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "ruff>=0.5"]
-gui = ["flet>=1.0"]
+gui = ["flet>=1.0", "pillow>=10"]
 
 [build-system]
 requires = ["setuptools>=68"]

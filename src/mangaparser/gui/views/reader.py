@@ -409,6 +409,7 @@ class ReaderView:
         self.page_label.value = f"стр. {self.current + 1} из {len(self.urls)}"
         self._scroll_to(self.current)
         self._save()
+        self.app.page.update(self.slider, self.page_label)
 
     def _scroll_to(self, index: int) -> None:
         # Смотрим на текущий режим, а не на «контрол не пуст»: после смены
@@ -569,6 +570,9 @@ class ReaderView:
             self.slider.value = page
             self.page_label.value = f"стр. {page + 1} из {len(self.urls)}"
             self._save()
+            # Лёгкое обновление пары контролов: полный update окна на
+            # каждое событие прокрутки заставлял бы клиент тормозить.
+            self.app.page.update(self.slider, self.page_label)
 
     def _calibrate(self, e: ft.OnScrollEvent) -> None:
         """Подогнать ширину списка под реальный контент.
@@ -600,6 +604,7 @@ class ReaderView:
         self.current = int(e.control.selected_index)
         self.slider.value = self.current
         self.page_label.value = f"стр. {self.current + 1} из {len(self.urls)}"
+        self.app.page.update(self.slider, self.page_label)
         self._prefetch()
         self._save()
 

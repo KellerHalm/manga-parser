@@ -42,6 +42,7 @@ class App:
         self.current: Any = None
         self.history: list[str] = [ROOT]
         self._going_back = False
+        self._last_wide = self._wide()
         self._pending_title: tuple[str, str, str, str | None] | None = None
         self._pending_reader: ReaderView | None = None
 
@@ -89,8 +90,14 @@ class App:
         self.history.append(route)
 
     def _on_resize(self, e: Any) -> None:
-        self._apply_shell()
-        self.page.update()
+        # Переложить навигацию нужно только при пересечении брейкпоинта:
+        # на каждый пиксель ресайза полный update окна отправлял бы клиенту
+        # всё дерево заново, и окно «вязло» при перетаскивании.
+        wide = self._wide()
+        if wide != self._last_wide:
+            self._last_wide = wide
+            self._apply_shell()
+            self.page.update()
 
     def _on_route_change(self, e: ft.RouteChangeEvent) -> None:
         route = e.route or ROOT
@@ -253,19 +260,15 @@ class App:
 
     def refresh(self) -> None:
         """
-        Перерисовать окно после изменения данных.
+        Отправить клиенту изменения данных.
 
-        Экран пересобирается целиком: `view()` возвращает новый `ft.View`
-        с теми же контролами, поэтому состояние (сетка, прочитанное, позиция)
-        сохраняется, а свежие данные попадают на экран. Экраны, которые
-        перерисовывают себя сами (читалка), помечаются `manages_view`.
+        Экраны мутируют собственные контролы _до_ вызова refresh, поэтому
+        достаточно отправить дельту. Пересборка `ft.View` целиком
+        отправляла бы клиенту всё дерево экрана (на каталоге — каждую
+        обложку заново) и сбрасывала прокрутку списка. Экраны, которые
+        перерисовывают себя сами (читалка), тоже получают только дельту:
+        их состояние живёт в собственных контейнерах.
         """
-        screen = self.current
-        if screen is not None and self.page.views and not getattr(
-            screen, "manages_view", False
-        ):
-            self.page.views[-1] = screen.view()
-        self._apply_shell()
         self.page.update()
 
     # ---------- переходы между экранами ----------

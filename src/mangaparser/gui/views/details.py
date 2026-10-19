@@ -52,6 +52,8 @@ class DetailsView:
         self.item: Any = None
         self.chapters: list[Any] = []
         self.chapter_sort = "number"
+        self._tiles: dict[str, tuple[int, ft.Control]] = {}
+        self._tile_version = 0  # версия состояния глав: прочитано/скачано
         self.loading_details = False
         self.loading_chapters = False
         self.error: str | None = None
@@ -133,6 +135,10 @@ class DetailsView:
 
     # ---------- отрисовка ----------
 
+    def _touch(self) -> None:
+        """Состояние глав изменилось (скачано/удалено) — пересобрать плитки."""
+        self._tile_version += 1
+
     def _favorite_button(self) -> ft.Control:
         favorite = self.state.library.is_favorite(self.source, self.key)
         return ft.IconButton(
@@ -169,8 +175,15 @@ class DetailsView:
         self.appbar.title = ft.Text(self.title, size=17, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
 
     def _hero(self) -> ft.Control:
-        cover_src = self.state.cover(self.cover, self.source) or self.cover
+        # Обложка через кэш и фоновый поток: `state.cover()` в рендере
+        # качал бы картинку синхронно, и карточка отрисовывалась только
+        # после загрузки файла с CDN.
         width = 116.0 if self.app.page.width < 420 else 132.0
+        picture = ft.Container(width=width, content=widgets.cover(None, width=width))
+        if self.cover:
+            widgets.lazy_cover(
+                self.app.page, self.state, self.cover, picture, width
+            )
         info: list[ft.Control] = [
             ft.Text(
                 self.title,
@@ -226,7 +239,7 @@ class DetailsView:
             padding=theme.pad(left=16, right=16, top=14, bottom=10),
             content=ft.Row(
                 [
-                    widgets.cover(cover_src, width=width),
+                    picture,
                     ft.Column(info, spacing=8, expand=True, tight=True),
                 ],
                 spacing=14,
@@ -362,7 +375,17 @@ class DetailsView:
             states = self.state.library.chapter_states(self.source, self.key)
             tiles: list[ft.Control] = []
             for chapter in self.chapters:
-                tiles.append(self._chapter_tile(chapter, states.get(chapter_key(chapter), {})))
+                # Плитка остаётся в кэше, пока состояние глав не поменялось:
+                # у долгих тайтлов (сотни глав) пересборка всех плиток на
+                # каждое действие переотправляла бы клиенту весь список.
+                state_key = chapter_key(chapter)
+                cached = self._tiles.get(state_key)
+                if cached is None or cached[0] != self._tile_version:
+                    tile = self._chapter_tile(chapter, states.get(state_key, {}))
+                    self._tiles[state_key] = (self._tile_version, tile)
+                else:
+                    tile = cached[1]
+                tiles.append(tile)
             body = ft.Column(tiles, spacing=0, tight=True)
 
         return ft.Column([header, body], spacing=0, tight=True)
@@ -477,6 +500,7 @@ class DetailsView:
 
     def _download(self, chapter: Any) -> None:
         client = self.state.hub.client(self.source)
+        self._touch()
         self.state.downloads.start(
             self.source,
             self.key,
@@ -492,35 +516,31 @@ class DetailsView:
 
     def _download_all(self) -> None:
         client = self.state.hub.client(self.source)
-        count = 0
+        entries: list[tuple[Any, str | None, list[str] | None]] = []
         for chapter in self.chapters:
             uid = chapter_key(chapter)
             if self.state.downloads.running(self.source, self.key, uid):
                 continue
             if self.state.library.is_downloaded(self.source, self.key, chapter):
                 continue
-            self.state.downloads.start(
-                self.source,
-                self.key,
-                self.title,
-                chapter,
-                _chapter_label(chapter),
-                client,
-                on_done=self._render,
-            )
-            count += 1
-        if count:
+            entries.append((chapter, _chapter_label(chapter), None))
+        if entries:
+            # Одна очередь вместо потока на главу: главы качаются
+            # последовательно, без всплеска запросов к одному сайту.
+            self.state.downloads.queue(self.source, self.key, self.title, entries, client)
             widgets.toast(
-                self.app.page, f"В очереди {count} глав", ft.Icons.DOWNLOAD_OUTLINED
+                self.app.page, f"В очереди {len(entries)} глав", ft.Icons.DOWNLOAD_OUTLINED
             )
         else:
             widgets.toast(self.app.page, "Все главы уже скачаны", ft.Icons.CHECK_CIRCLE)
+        self._touch()
         self._render()
         self.app.refresh()
 
     def _delete_chapter(self, chapter: Any) -> None:
         self.state.images.remove_chapter(self.source, self.key, chapter)
         self.state.library.remove_download(self.source, self.key, chapter)
+        self._touch()
         self._render()
         self.app.refresh()
 

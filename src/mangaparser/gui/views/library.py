@@ -24,6 +24,7 @@ class LibraryView:
         self.app = app
         self.state = state
         self.index = 0
+        self._tabs_control: ft.Tabs | None = None
         self.body = ft.Column(expand=True, spacing=0)
         self.appbar = ft.AppBar(
             title=ft.Text("Библиотека"),
@@ -62,18 +63,22 @@ class LibraryView:
 
         У `ft.Tabs` обязателен `length`, а у `ft.TabBar` нет `bgcolor`:
         цвет полосы берётся из темы, а её акцент задаёт `indicator_color`.
+        Контрол один на весь экран: пересоздание на каждом refresh
+        отправляло бы клиенту вкладки заново целиком.
         """
-        return ft.Tabs(
-            length=len(TABS),
-            selected_index=self.index,
-            on_change=lambda e: self.select(e.control.selected_index),
-            content=ft.TabBar(
-                indicator_color=theme.PRIMARY,
-                label_color=theme.TEXT,
-                unselected_label_color=theme.MUTED,
-                tabs=[ft.Tab(label=title) for title in TABS],
-            ),
-        )
+        if self._tabs_control is None:
+            self._tabs_control = ft.Tabs(
+                length=len(TABS),
+                on_change=lambda e: self.select(e.control.selected_index),
+                content=ft.TabBar(
+                    indicator_color=theme.PRIMARY,
+                    label_color=theme.TEXT,
+                    unselected_label_color=theme.MUTED,
+                    tabs=[ft.Tab(label=title) for title in TABS],
+                ),
+            )
+        self._tabs_control.selected_index = self.index
+        return self._tabs_control
 
     def view(self) -> ft.View:
         return ft.View(
@@ -167,11 +172,23 @@ class LibraryView:
                     ink=True,
                     content=ft.Row(
                         [
-                            widgets.cover(
-                                self.state.cover(row.get("cover"), row["source"])
-                                or row.get("cover"),
-                                width=42,
-                                radius=8,
+                            # Обложка — через кэш: из него путь подставляется
+                            # сразу, а сети здесь нет. Прямой `state.cover()`
+                            # качал бы картинку в UI-потоке: у пустого кэша
+                            # вкладка «История» замораживала бы окно на
+                            # секунды (один сетевой запрос на строку).
+                            (
+                                box := ft.Container(
+                                    width=42,
+                                    border_radius=theme.radius(8),
+                                    bgcolor=theme.SURFACE_HIGH,
+                                    alignment=ft.Alignment.CENTER,
+                                    content=ft.Icon(
+                                        ft.Icons.IMAGE_OUTLINED,
+                                        size=18,
+                                        color=theme.MUTED,
+                                    ),
+                                )
                             ),
                             ft.Column(
                                 [
@@ -205,6 +222,10 @@ class LibraryView:
                     ),
                 )
             )
+            if row.get("cover"):
+                widgets.lazy_cover(
+                    self.app.page, self.state, row["cover"], box, 42, radius=8
+                )
         return [
             ft.Container(
                 padding=theme.pad(left=16, right=16, top=10, bottom=6),

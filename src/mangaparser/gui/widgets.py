@@ -90,6 +90,7 @@ def lazy_cover(
     box: ft.Container,
     width: float,
     source: str | None = None,
+    radius: float = 14,
 ) -> None:
     """
     Подставить обложку в контейнер: из кэша сразу, иначе скачать в фоне.
@@ -102,7 +103,7 @@ def lazy_cover(
     source = source or ""
     cached = state.images.cached_cover(url)
     if cached:
-        box.content = cover(cached, width=width)
+        box.content = cover(cached, width=width, radius=radius)
         return
 
     def worker() -> None:
@@ -112,7 +113,7 @@ def lazy_cover(
             except Exception:
                 return
         if path:
-            box.content = cover(path, width=width)
+            box.content = cover(path, width=width, radius=radius)
             page.update(box)
 
     # Через `run_thread`, а не свой поток: из чужого потока обновления до

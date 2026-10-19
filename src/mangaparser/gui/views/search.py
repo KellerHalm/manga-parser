@@ -30,6 +30,7 @@ class SearchView:
         self.results: dict[str, list[Any]] = {}
         self.errors: dict[str, str] = {}
         self.order: list[str] = []
+        self._grids: dict[str, ft.GridView] = {}
 
         self.field = ft.TextField(
             expand=True,
@@ -71,6 +72,7 @@ class SearchView:
         self.results.clear()
         self.errors.clear()
         self.order.clear()
+        self._grids.clear()
         self.loading = True
         self.status.value = "Ищем…"
         self._render()
@@ -88,6 +90,9 @@ class SearchView:
         def on_error(source: str, message: str) -> None:
             with lock:
                 self.errors[source] = message
+            # Ошибка источника — это тоже строка в выдаче: без перерисовки
+            # она появилась бы только вместе с результатом другого поиска.
+            self._render()
             page.update()
 
         def on_done() -> None:
@@ -151,6 +156,19 @@ class SearchView:
             )
         self.body.controls = blocks
 
+    def _card(self, source: str, item: Any) -> ft.Control:
+        return widgets.cover_card(
+            item,
+            source=source,
+            width=150,
+            on_click=self._open,
+            on_favorite=self._toggle_favorite,
+            is_favorite=self.state.library.is_favorite(source, key_of(item)),
+            show_source=False,
+            state=self.state,
+            page=self.app.page,
+        )
+
     def _block(self, source: str, items: list[Any]) -> ft.Container:
         grid = ft.GridView(
             max_extent=150,
@@ -158,21 +176,9 @@ class SearchView:
             run_spacing=10,
             padding=theme.pad(left=16, right=16, top=6, bottom=6),
             child_aspect_ratio=widgets.COVER_RATIO,
-            controls=[
-                widgets.cover_card(
-                    item,
-                    source=source,
-                    width=150,
-                    on_click=self._open,
-                    on_favorite=self._toggle_favorite,
-                    is_favorite=self.state.library.is_favorite(source, key_of(item)),
-                    show_source=False,
-                    state=self.state,
-                    page=self.app.page,
-                )
-                for item in items
-            ],
+            controls=[self._card(source, item) for item in items],
         )
+        self._grids[source] = grid
         return ft.Column(
             [
                 ft.Container(
@@ -198,6 +204,18 @@ class SearchView:
             from ..hub import rating_of
 
             library.add_favorite(source, key, title_of(item), cover_of(item), rating_of(item))
+        # Перерисовать только блок этого источника: пересборка всей выдачи
+        # переотправляла бы клиенту все найденные карточки заново.
+        grid = self._grids.get(source)
+        items = self.results.get(source) or []
+        if grid is not None and len(grid.controls) == len(items) and items:
+            index = next(
+                (i for i, it in enumerate(items) if key_of(it) == key), None
+            )
+            if index is not None:
+                grid.controls[index] = self._card(source, items[index])
+                self.app.page.update(grid)
+                return
         self._render()
         self.app.refresh()
 

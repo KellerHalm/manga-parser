@@ -28,6 +28,10 @@ class ExploreView:
         self.source = source
         self.page_number = 1
         self.items: list[Any] = []
+        self._favorites: set[str] = set()
+        self._cards = 0  # сколько карточек уже нарисовано в сетке
+        self._note: ft.Control | None = None
+        self._loaded = False
         self.loading = False
         self.finished = False
         self.error: str | None = None
@@ -57,17 +61,32 @@ class ExploreView:
 
     # ---------- загрузка ----------
 
-    def load_first(self) -> None:
+    def load_first(self, force: bool = False) -> None:
+        """
+        Загрузить каталог с первой страницы.
+
+        Повторный заход на экран не сбрасывает каталог: данные уже на месте,
+        а новая загрузка выковыривала бы пользователю всё скачанное и
+        возвращала бы прокрутку в начало. Сброс — только по кнопке
+        «Обновить» (`force=True`) или после ошибки загрузки.
+        """
+        if not force and self._loaded and not self.error:
+            self._render_body()
+            return
         self.items.clear()
+        self._favorites.clear()
+        self._cards = 0
+        self._note = None
+        self.grid.controls = []
         self.page_number = 1
         self.finished = False
         self.error = None
-        self.grid.controls.clear()
+        self.grid.visible = True
         self._render_body()
         self.load_more(initial=True)
 
     def reload(self) -> None:
-        self.load_first()
+        self.load_first(force=True)
 
     def load_more(self, initial: bool = False) -> None:
         if self.loading or self.finished:
@@ -82,8 +101,10 @@ class ExploreView:
             try:
                 found = list(self.state.hub.client(source).catalog(page=number))
                 self.items.extend(found)
+                self._favorites.update(key_of(item) for item in found)
                 self.finished = not found
                 self.page_number = number + 1
+                self._loaded = True
             except Exception as exc:
                 self.error = str(exc)
             finally:
@@ -102,43 +123,44 @@ class ExploreView:
 
     # ---------- отрисовка ----------
 
+    def _card(self, item: Any) -> ft.Control:
+        return widgets.cover_card(
+            item,
+            source=self.source,
+            width=170,
+            on_click=self._open,
+            on_favorite=self._toggle_favorite,
+            is_favorite=self._is_favorite(item),
+            state=self.state,
+            page=self.app.page,
+        )
+
     def _render_body(self) -> None:
         if self.error and not self.items:
-            self.grid.controls.clear()
+            self.grid.controls = []
+            self._cards = 0
             self.grid.visible = False
             self.footer.visible = False
             return
 
         self.grid.visible = True
-        self.grid.controls = [
-            widgets.cover_card(
-                item,
-                source=self.source,
-                width=170,
-                on_click=self._open,
-                on_favorite=self._toggle_favorite,
-                is_favorite=self._is_favorite(item),
-                state=self.state,
-                page=self.app.page,
-            )
-            for item in self.items
-        ]
-
+        cards = self.grid.controls
+        # Дописать только новые карточки: пересборка всей сетки на каждой
+        # странице отправляла бы клиенту все обложки заново (чем дальше
+        # прокрутка, тем больше) и перезапускала бы их загрузку с CDN.
+        if self._cards > len(self.items):
+            self.grid.controls = []
+            self._cards = 0
+            cards = self.grid.controls
+        if cards and cards[-1] is self._note:
+            cards.pop()  # заметка всегда в хвосте, но карточек больше неё
+        while self._cards < len(self.items):
+            cards.append(self._card(self.items[self._cards]))
+            self._cards += 1
         note = SOURCE_NOTES.get(self.source)
         if note:
-            self.grid.controls.append(
-                ft.Container(
-                    height=60,
-                    alignment=ft.Alignment.CENTER_LEFT,
-                    content=ft.Row(
-                        [
-                            ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=theme.MUTED),
-                            ft.Text(note, size=12, color=theme.MUTED, expand=True),
-                        ],
-                        spacing=8,
-                    ),
-                )
-            )
+            self._note = self._note_row(note)
+            cards.append(self._note)
 
         if self.loading:
             self.footer.visible = True
@@ -157,22 +179,44 @@ class ExploreView:
         else:
             self.footer.visible = False
 
+    def _note_row(self, note: str) -> ft.Control:
+        return ft.Container(
+            height=60,
+            alignment=ft.Alignment.CENTER_LEFT,
+            content=ft.Row(
+                [
+                    ft.Icon(ft.Icons.INFO_OUTLINE, size=15, color=theme.MUTED),
+                    ft.Text(note, size=12, color=theme.MUTED, expand=True),
+                ],
+                spacing=8,
+            ),
+        )
+
     def _is_favorite(self, item: Any) -> bool:
-        return self.state.library.is_favorite(self.source, key_of(item))
+        return key_of(item) in self._favorites
 
     def _toggle_favorite(self, item: Any) -> None:
         key = key_of(item)
         library = self.state.library
-        if library.is_favorite(self.source, key):
+        if key in self._favorites:
             library.remove_favorite(self.source, key)
+            self._favorites.discard(key)
             widgets.toast(self.app.page, "Убрано из библиотеки", ft.Icons.BOOKMARK_REMOVE)
         else:
             library.add_favorite(
                 self.source, key, title_of(item), cover_of(item), _rating(item)
             )
+            self._favorites.add(key)
             widgets.toast(self.app.page, "Добавлено в библиотеку", ft.Icons.BOOKMARK_ADD)
-        self._render_body()
-        self.app.refresh()
+        # Перерисовать только плитку этого тайтла: пересборка сетки
+        # скидывала бы прокрутку и переотправляла бы клиенту все обложки.
+        cards = self.grid.controls
+        limit = min(self._cards, len(self.items), len(cards))
+        for index in range(limit):
+            if key_of(self.items[index]) == key:
+                cards[index] = self._card(self.items[index])
+                break
+        self.app.page.update(self.grid)
 
     def _open(self, item: Any) -> None:
         self.app.open_details(self.source, key_of(item), title_of(item), cover_of(item))

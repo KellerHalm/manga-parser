@@ -46,7 +46,7 @@ def label_of(source: str) -> str:
 
 @dataclass
 class Downloads:
-    """Фоновые закачки глав: по одному потоку на главу."""
+    """Фоновые закачки глав: главы одного тайтла качаются по очереди."""
 
     page: ft.Page
     store: ImageStore
@@ -69,34 +69,74 @@ class Downloads:
         pages: list[str] | None = None,
         on_done: Callable[[], None] | None = None,
     ) -> None:
-        import threading
+        """Скачать одну главу в фоне."""
+        self._run(source, key, title, [(chapter, label, pages)], client, on_done)
 
+    def queue(
+        self,
+        source: str,
+        key: str,
+        title: str,
+        entries: list[tuple[object, str | None, list[str] | None]],
+        client: object,
+        on_done: Callable[[], None] | None = None,
+    ) -> None:
+        """Скачать список глав одним воркером, друг за другом.
+
+        На главу можно завести и по потоку, но тогда главы одного
+        источника ломают его троттлинг (сайт отбивает 429), а сессия
+        `requests` не потокобезопасна. Поэтому очередь общая.
+        """
+        self._run(source, key, title, entries, client, on_done)
+
+    def _run(
+        self,
+        source: str,
+        key: str,
+        title: str,
+        entries: list[tuple[object, str | None, list[str] | None]],
+        client: object,
+        on_done: Callable[[], None] | None,
+    ) -> None:
         from .store import chapter_key as ck
 
-        uid = f"{source}|{key}|{ck(chapter)}"
-        if self.active.get(uid):
+        pending = [(chapter, label, pages) for chapter, label, pages in entries if not self.active.get(f"{source}|{key}|{ck(chapter)}")]
+        if not pending:
+            if on_done:
+                on_done()
             return
-        self.active[uid] = True
-        self.errors.pop(uid, None)
+        for chapter, _label, _pages in pending:
+            self.active[f"{source}|{key}|{ck(chapter)}"] = True
 
         def worker() -> None:
-            try:
-                urls = pages if pages is not None else list(client.chapter_pages(key, chapter))
-                if not urls:
-                    raise RuntimeError("У главы нет доступных страниц")
-                referer = self.referer(source) if self.referer else None
-                folder = self.store.chapter_folder(source, key, chapter)
-                self.store.download_chapter(urls, folder, referer=referer)
-                self.library.add_download(source, key, chapter, title, label, len(urls))
-            except Exception as exc:
-                self.errors[uid] = str(exc)
-            finally:
-                self.active[uid] = False
-                self.page.update()
-                if on_done:
-                    on_done()
+            for chapter, label, pages in pending:
+                uid = f"{source}|{key}|{ck(chapter)}"
+                try:
+                    urls = pages if pages is not None else list(client.chapter_pages(key, chapter))
+                    if not urls:
+                        raise RuntimeError("У главы нет доступных страниц")
+                    referer = self.referer(source) if self.referer else None
+                    folder = self.store.chapter_folder(source, key, chapter)
+                    self.store.download_chapter(urls, folder, referer=referer)
+                    self.library.add_download(source, key, chapter, title, label, len(urls))
+                    self.errors.pop(uid, None)
+                except Exception as exc:
+                    self.errors[uid] = str(exc)
+                finally:
+                    self.active[uid] = False
+                    try:
+                        if on_done:
+                            # Сначала перерисовать экран (on_done мутирует
+                            # контролы), потом отправить дельту клиенту.
+                            on_done()
+                    except Exception:
+                        pass
+                    self.page.update()
 
-        threading.Thread(target=worker, daemon=True).start()
+        # Через `run_thread`, а не свой `threading.Thread`: из чужого потока
+        # обновления до клиента не доходят, и скачивание выглядит как
+        # нажатие, которое ничего не делает.
+        self.page.run_thread(worker)
 
 
 class AppState:
